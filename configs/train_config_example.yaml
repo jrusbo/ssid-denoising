@@ -1,0 +1,62 @@
+# ##############################################################################
+# HASST SIDD Denoising - Comprehensive Training Configuration
+# This file serves as a template for all available training parameters.
+# Modify these values to customize your training experiments.
+# ##############################################################################
+
+# --- General Training Settings ---
+seed: 42                      # Random seed for reproducibility (PyTorch, Numpy, Python).
+max_hours: 11.5               # Maximum training duration in hours. The script will save and exit gracefully before this limit.
+                              # Useful for environments with time limits like Kaggle (12h) or Colab.
+use_compile: true             # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
+mixed_precision: "fp16"       # Mixed precision mode: "no", "fp16", or "bf16". 
+                              # "fp16" is recommended for most NVIDIA GPUs. "bf16" is better for Ampere+ (A100, 30-series).
+
+# --- Data Paths ---
+data_dir: "dataset/Data"      # Path to the raw SIDD Benchmark dataset (containing Ground Truth and Noisy folders).
+lmdb_dir: "dataset/sidd_lmdb" # Path where the processed LMDB dataset is (or will be) stored for high-performance I/O.
+output_dir: "checkpoints"     # Directory where checkpoints, logs, and WandB artifacts will be saved.
+
+# --- Resuming Training ---
+resume: false                 # Set to 'true' to resume training from a previous checkpoint.
+resume_path: null             # Specific path to a .pth checkpoint file to resume from. 
+                              # If 'resume' is true and this is null, it searches for 'last_model.pth' in output_dir.
+
+# --- Model Hyperparameters ---
+embed_dim: 64                 # The base embedding dimension for the network. Higher values increase model capacity but use more VRAM.
+num_blocks: 8                 # Number of interleaved HASST blocks (Local NAFBlock + Global Mamba ASSB).
+in_channels: 3                # Number of input color channels (3 for RGB).
+out_channels: 3               # Number of output color channels (3 for RGB).
+
+# --- WandB & Logging Frequency ---
+wandb_project: "sidd-hasst"   # The name of the Weights & Biases project for logging.
+wandb_entity: null            # Your WandB username or team entity name. Leave null to use default.
+wandb_run_id: null            # Specific WandB Run ID to resume (e.g., "oqhsp5mu"). 
+                              # If null, it will be automatically restored from the checkpoint.
+log_freq: 100                 # Log training metrics (loss, LR, etc.) to WandB every N iterations.
+val_freq: 2000                # Perform validation and log visual image comparisons to WandB every N iterations.
+checkpoint_freq: 5000         # Save a 'last_model.pth' checkpoint locally every N iterations.
+
+# --- Progressive Training Schedule ---
+# The training is split into phases with increasing patch sizes to balance global context and local refinement.
+total_iters: 500000           # Total number of iterations across all phases.
+patch_sizes: [128, 192, 256, 384]  # Patch sizes for each phase (e.g., Phase 1: 128x128, Phase 2: 256x256, etc.).
+batch_sizes: [8, 4, 2, 1]        # Batch size per GPU for each phase. Adjust based on your available VRAM.
+phase_milestones: [150000, 300000, 420000] # Iteration counts where the next phase begins.
+
+# --- Optimizer & Learning Rate ---
+optimizer_type: "Adam"        # Type of optimizer. (Currently "Adam" is implemented).
+lr_initial: 2.0e-4            # Initial learning rate.
+lr_min: 1.0e-07               # Minimum learning rate for the Cosine Annealing scheduler.
+beta1: 0.9                    # Adam optimizer's beta1 parameter (momentum).
+beta2: 0.999                  # Adam optimizer's beta2 parameter (RMSprop-like).
+weight_decay: 1.0e-04         # L2 regularization coefficient.
+
+# --- Loss Function Weights ---
+# The loss is a weighted sum of spatial and frequency domain errors.
+charbonnier_weight: 1.0       # Weight for the Charbonnier loss (robust L1-like spatial loss).
+wavelet_weight: 0.05          # Weight for the frequency-domain Wavelet loss.
+
+# --- Hardware / DataLoader Settings ---
+num_workers: 4                # Number of CPU subprocesses for data loading per GPU.
+pin_memory: true              # Whether to use pinned memory for faster CPU-to-GPU data transfer.
