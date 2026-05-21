@@ -58,5 +58,5 @@ charbonnier_weight: 1.0       # Weight for the Charbonnier loss (robust L1-like 
 wavelet_weight: 0.05          # Weight for the frequency-domain Wavelet loss.
 
 # --- Hardware / DataLoader Settings ---
-num_workers: 4                # Number of CPU subprocesses for data loading per GPU.
+num_workers: 0                # Number of CPU subprocesses for data loading per GPU.
 pin_memory: true              # Whether to use pinned memory for faster CPU-to-GPU data transfer.
