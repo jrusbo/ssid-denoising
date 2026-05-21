@@ -209,8 +209,9 @@ def run_training(cfg: Config):
     wandb_run_id = logger.get_run_id()
 
     # Update cfg.output_dir to be run-specific (Using human-readable run name)
-    run_name = wandb.run.name if wandb.run is not None else wandb_run_id
-    cfg.output_dir = base_output_dir / run_name
+    # On multi-GPU, only the main process has a wandb.run. Worker processes need a fallback.
+    run_name = (wandb.run.name if (wandb.run is not None) else None) or wandb_run_id or "train_run"
+    cfg.output_dir = base_output_dir / str(run_name)
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     
     # Update wandb config with the final run-specific output directory
