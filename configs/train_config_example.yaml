@@ -13,8 +13,8 @@ mixed_precision: "fp16"       # Mixed precision mode: "no", "fp16", or "bf16".
                               # "fp16" is recommended for most NVIDIA GPUs. "bf16" is better for Ampere+ (A100, 30-series).
 
 # --- Data Paths ---
-data_dir: "dataset/Data"      # Path to the raw SIDD Benchmark dataset (containing Ground Truth and Noisy folders).
-lmdb_dir: "dataset/sidd_lmdb" # Path where the processed LMDB dataset is (or will be) stored for high-performance I/O.
+data_dir: "/kaggle/input/datasets/shaojunjieeric/ssid-medium-srgb/mnt/d/SIDD_Medium_Srgb/Data" # "dataset/Data"      # Path to the raw SIDD Benchmark dataset (containing Ground Truth and Noisy folders).
+lmdb_dir: "/kaggle/working/sidd_lmdb" # "dataset/sidd_lmdb" # Path where the processed LMDB dataset is (or will be) stored for high-performance I/O.
 output_dir: "checkpoints"     # Directory where checkpoints, logs, and WandB artifacts will be saved.
 
 # --- Resuming Training ---
