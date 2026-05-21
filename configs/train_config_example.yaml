@@ -6,15 +6,15 @@
 
 # --- General Training Settings ---
 seed: 42                      # Random seed for reproducibility (PyTorch, Numpy, Python).
-max_hours: 11.5               # Maximum training duration in hours. The script will save and exit gracefully before this limit.
+max_hours: None               # Maximum training duration in hours. The script will save and exit gracefully before this limit.
                               # Useful for environments with time limits like Kaggle (12h) or Colab.
-use_compile: false             # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
+use_compile: true             # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
 mixed_precision: "fp16"       # Mixed precision mode: "no", "fp16", or "bf16". 
                               # "fp16" is recommended for most NVIDIA GPUs. "bf16" is better for Ampere+ (A100, 30-series).
 
 # --- Data Paths ---
-data_dir: "/kaggle/input/datasets/shaojunjieeric/ssid-medium-srgb/mnt/d/SIDD_Medium_Srgb/Data" # "dataset/Data"      # Path to the raw SIDD Benchmark dataset (containing Ground Truth and Noisy folders).
-lmdb_dir: "/kaggle/working/sidd_lmdb" # "dataset/sidd_lmdb" # Path where the processed LMDB dataset is (or will be) stored for high-performance I/O.
+data_dir: "dataset/Data"      # Path to the raw SIDD Benchmark dataset (containing Ground Truth and Noisy folders).
+lmdb_dir: "dataset/sidd_lmdb" # Path where the processed LMDB dataset is (or will be) stored for high-performance I/O.
 output_dir: "checkpoints"     # Directory where checkpoints, logs, and WandB artifacts will be saved.
 
 # --- Resuming Training ---
@@ -58,5 +58,5 @@ charbonnier_weight: 1.0       # Weight for the Charbonnier loss (robust L1-like 
 wavelet_weight: 0.05          # Weight for the frequency-domain Wavelet loss.
 
 # --- Hardware / DataLoader Settings ---
-num_workers: 0                # Number of CPU subprocesses for data loading per GPU.
+num_workers: 4                # Number of CPU subprocesses for data loading per GPU.
 pin_memory: true              # Whether to use pinned memory for faster CPU-to-GPU data transfer.
