@@ -25,6 +25,7 @@ dependencies = [
 mamba = [
     "mamba-ssm",
     "causal-conv1d",
+    "wrapt"
 ]
 
 [tool.uv]
