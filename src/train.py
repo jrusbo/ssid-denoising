@@ -437,7 +437,7 @@ def run_training(cfg: Config):
                     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
                     break 
 
-                if time.time() - start_time > max_seconds:
+                if max_seconds and (time.time() - start_time > max_seconds):
                     break
     finally:
         # 8. Shutdown & Final Save
