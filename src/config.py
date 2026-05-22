@@ -10,7 +10,7 @@ import yaml
 class Config:
     # --- Kaggle / Training Settings ---
     seed: int = 42
-    max_hours: float = 11.5
+    max_hours: Optional[float] = 11.5
     use_compile: bool = True
     mixed_precision: str = "fp16"  # "no", "fp16", "bf16"
 
@@ -72,12 +72,18 @@ class Config:
         for f in float_fields:
             val = getattr(self, f)
             if val is not None:
-                setattr(self, f, float(val))
+                if isinstance(val, str) and val.lower() in ["none", "null", ""]:
+                    setattr(self, f, None)
+                else:
+                    setattr(self, f, float(val))
         
         for f in int_fields:
             val = getattr(self, f)
             if val is not None:
-                setattr(self, f, int(val))
+                if isinstance(val, str) and val.lower() in ["none", "null", ""]:
+                    setattr(self, f, None)
+                else:
+                    setattr(self, f, int(val))
         
         # Convert string paths to Path objects
         self.data_dir = Path(self.data_dir)

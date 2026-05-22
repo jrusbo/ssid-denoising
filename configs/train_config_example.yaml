@@ -6,7 +6,7 @@
 
 # --- General Training Settings ---
 seed: 42                      # Random seed for reproducibility (PyTorch, Numpy, Python).
-max_hours: None               # Maximum training duration in hours. The script will save and exit gracefully before this limit.
+max_hours: null               # Maximum training duration in hours. The script will save and exit gracefully before this limit.
                               # Useful for environments with time limits like Kaggle (12h) or Colab.
 use_compile: true             # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
 mixed_precision: "fp16"       # Mixed precision mode: "no", "fp16", or "bf16". 
