@@ -69,11 +69,11 @@ class NAFBlock(nn.Module):
         x = self.sg(x)
         x = x * self.sca(x)
         x = self.conv3(x)
-        y = inp + x * self.beta
+        y = inp + x * self.beta.to(inp.dtype)
 
         # 2. Feed-forward / Channel Branch
         x = self.norm2(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         x = self.conv4(x)
         x = self.sg(x)
         x = self.conv5(x)
-        return y + x * self.gamma
+        return y + x * self.gamma.to(y.dtype)

@@ -150,10 +150,11 @@ class AttentiveStateSpaceBlock(nn.Module):
 
         # 1. Global Branch: Mamba Token Mixer
         if self.mamba is not None:
-            x_m = self.mamba(x_norm_seq)
+            # Explicitly cast to FP32 for Mamba if needed, then back to input dtype
+            x_m = self.mamba(x_norm_seq.float()).to(x_norm_seq.dtype)
             x_m = rearrange(x_m, "b (h w) c -> b c h w", h=H, w=W)
         else:
-            x_m = 0
+            x_m = torch.zeros_like(x_norm).permute(0, 3, 1, 2)
 
         # 2. Local Branch: Window Attention
         # Partition windows
@@ -181,11 +182,12 @@ class AttentiveStateSpaceBlock(nn.Module):
         x_attn = rearrange(x_attn, "b h w c -> b c h w")
 
         # Combine parallel mixers with residual and stabilization scales
-        x = x + x_m * self.mamba_beta + x_attn * self.attn_beta
+        # Use .to(x.dtype) to prevent FP32 promotion in mixed precision
+        x = x + x_m * self.mamba_beta.to(x.dtype) + x_attn * self.attn_beta.to(x.dtype)
 
         # 3. Feed-forward Branch
         res = x
         x_f = rearrange(x, "b c h w -> b (h w) c")
         x_f = self.ffn(self.norm2(x_f))
         x_f = rearrange(x_f, "b (h w) c -> b c h w", h=H, w=W)
-        return res + x_f * self.ffn_gamma
+        return res + x_f * self.ffn_gamma.to(x.dtype)
