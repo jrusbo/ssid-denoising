@@ -352,7 +352,8 @@ def run_training(cfg: Config):
 
                 with accelerator.autocast():
                     pred = model(noisy)
-                    loss, loss_dict = criterion(pred, gt)
+                    # Force FP32 for loss calculation to ensure stability and type consistency
+                    loss, loss_dict = criterion(pred.float(), gt.float())
 
                 optimizer.zero_grad()
                 accelerator.backward(loss)

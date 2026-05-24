@@ -63,7 +63,9 @@ class NAFBlock(nn.Module):
             x_in = x_in * (1 + cond_scale.type_as(x_in))
 
         # 1. Spatial / Attention Branch
-        x = self.norm1(x_in.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).type_as(x_in)
+        # Force LayerNorm to FP32 for backward compatibility/stability in mixed precision
+        x_p = x_in.permute(0, 2, 3, 1)
+        x = self.norm1(x_p.float()).type_as(x_in).permute(0, 3, 1, 2)
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.sg(x)
@@ -72,7 +74,9 @@ class NAFBlock(nn.Module):
         y = inp + x * self.beta.type_as(inp)
 
         # 2. Feed-forward / Channel Branch
-        x = self.norm2(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).type_as(y)
+        # Force LayerNorm to FP32
+        y_p = y.permute(0, 2, 3, 1)
+        x = self.norm2(y_p.float()).type_as(y).permute(0, 3, 1, 2)
         x = self.conv4(x)
         x = self.sg(x)
         x = self.conv5(x)

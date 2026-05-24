@@ -146,13 +146,14 @@ class AttentiveStateSpaceBlock(nn.Module):
             x_in = x_in * (1 + cond_scale.type_as(x_in))
 
         # Normalization for mixers
-        # LayerNorm outputs are cast to feature type explicitly to prevent promotion
-        x_norm_seq = self.norm1(rearrange(x_in, "b c h w -> b (h w) c")).type_as(x_in)
+        # Force LayerNorm to FP32 explicitly to avoid type mismatch in backward pass
+        x_seq = rearrange(x_in, "b c h w -> b (h w) c")
+        x_norm_seq = self.norm1(x_seq.float()).type_as(x_in)
         x_norm = rearrange(x_norm_seq, "b (h w) c -> b h w c", h=H, w=W)
 
         # 1. Global Branch: Mamba Token Mixer
         if self.mamba is not None:
-            # Explicitly cast to FP32 for Mamba stability, then back to input type_as
+            # Mamba always runs in FP32 for numerical stability
             x_m = self.mamba(x_norm_seq.float()).type_as(x_norm_seq)
             x_m = rearrange(x_m, "b (h w) c -> b c h w", h=H, w=W)
         else:
@@ -189,7 +190,8 @@ class AttentiveStateSpaceBlock(nn.Module):
 
         # 3. Feed-forward Branch
         res = x
-        x_f = rearrange(x, "b c h w -> b (h w) c")
-        x_f = self.ffn(self.norm2(x_f).type_as(x_f))
+        x_f_seq = rearrange(x, "b c h w -> b (h w) c")
+        # Force LayerNorm to FP32
+        x_f = self.ffn(self.norm2(x_f_seq.float()).type_as(x_f_seq))
         x_f = rearrange(x_f, "b (h w) c -> b c h w", h=H, w=W)
         return res + x_f * self.ffn_gamma.type_as(x)
