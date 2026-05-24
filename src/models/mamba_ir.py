@@ -142,19 +142,16 @@ class AttentiveStateSpaceBlock(nn.Module):
         x_in = x
         if noise_prior is not None:
             cond_scale = self.cond_proj(noise_prior)
-            # Use type_as to ensure noise modulation matches activation type
-            x_in = x_in * (1 + cond_scale.type_as(x_in))
+            x_in = x_in * (1 + cond_scale)
 
         # Normalization for mixers
-        # Force LayerNorm to FP32 explicitly to avoid type mismatch in backward pass
         x_seq = rearrange(x_in, "b c h w -> b (h w) c")
-        x_norm_seq = self.norm1(x_seq.float()).type_as(x_in)
+        x_norm_seq = self.norm1(x_seq)
         x_norm = rearrange(x_norm_seq, "b (h w) c -> b h w c", h=H, w=W)
 
         # 1. Global Branch: Mamba Token Mixer
         if self.mamba is not None:
-            # Mamba always runs in FP32 for numerical stability
-            x_m = self.mamba(x_norm_seq.float()).type_as(x_norm_seq)
+            x_m = self.mamba(x_norm_seq)
             x_m = rearrange(x_m, "b (h w) c -> b c h w", h=H, w=W)
         else:
             x_m = torch.zeros_like(x_in)
@@ -182,16 +179,14 @@ class AttentiveStateSpaceBlock(nn.Module):
         if pad_h > 0 or pad_w > 0:
             x_attn = x_attn[:, :H, :W, :].contiguous()
 
-        x_attn = rearrange(x_attn, "b h w c -> b c h w").type_as(x_in)
+        x_attn = rearrange(x_attn, "b h w c -> b c h w")
 
         # Combine parallel mixers with residual and stabilization scales
-        # Use .type_as(x) to prevent FP32 promotion in mixed precision
-        x = x + x_m * self.mamba_beta.type_as(x) + x_attn * self.attn_beta.type_as(x)
+        x = x + x_m * self.mamba_beta + x_attn * self.attn_beta
 
         # 3. Feed-forward Branch
         res = x
         x_f_seq = rearrange(x, "b c h w -> b (h w) c")
-        # Force LayerNorm to FP32
-        x_f = self.ffn(self.norm2(x_f_seq.float()).type_as(x_f_seq))
+        x_f = self.ffn(self.norm2(x_f_seq))
         x_f = rearrange(x_f, "b (h w) c -> b c h w", h=H, w=W)
-        return res + x_f * self.ffn_gamma.type_as(x)
+        return res + x_f * self.ffn_gamma

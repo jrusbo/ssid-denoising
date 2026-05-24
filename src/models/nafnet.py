@@ -60,24 +60,20 @@ class NAFBlock(nn.Module):
         x_in = inp
         if noise_prior is not None:
             cond_scale = self.cond_proj(noise_prior)
-            x_in = x_in * (1 + cond_scale.type_as(x_in))
+            x_in = x_in * (1 + cond_scale)
 
         # 1. Spatial / Attention Branch
-        # Force LayerNorm to FP32 for backward compatibility/stability in mixed precision
-        x_p = x_in.permute(0, 2, 3, 1)
-        x = self.norm1(x_p.float()).type_as(x_in).permute(0, 3, 1, 2)
+        x = self.norm1(x_in.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.sg(x)
         x = x * self.sca(x)
         x = self.conv3(x)
-        y = inp + x * self.beta.type_as(inp)
+        y = inp + x * self.beta
 
         # 2. Feed-forward / Channel Branch
-        # Force LayerNorm to FP32
-        y_p = y.permute(0, 2, 3, 1)
-        x = self.norm2(y_p.float()).type_as(y).permute(0, 3, 1, 2)
+        x = self.norm2(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         x = self.conv4(x)
         x = self.sg(x)
         x = self.conv5(x)
-        return y + x * self.gamma.type_as(y)
+        return y + x * self.gamma
