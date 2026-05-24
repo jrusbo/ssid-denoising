@@ -41,7 +41,7 @@ checkpoint_freq: 5000         # Save a 'last_model.pth' checkpoint locally every
 # The training is split into phases with increasing patch sizes to balance global context and local refinement.
 total_iters: 500000           # Total number of iterations across all phases.
 patch_sizes: [128, 192, 256, 384]  # Patch sizes for each phase (e.g., Phase 1: 128x128, Phase 2: 256x256, etc.).
-batch_sizes: [6, 2, 1, 1]        # Batch size per GPU for each phase. Adjust based on your available VRAM.
+batch_sizes: [4, 2, 1, 1]        # Batch size per GPU for each phase. Adjust based on your available VRAM.
 phase_milestones: [150000, 300000, 420000] # Iteration counts where the next phase begins.
 
 # --- Optimizer & Learning Rate ---
