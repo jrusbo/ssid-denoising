@@ -8,23 +8,22 @@ from torch.utils.data import Dataset
 
 
 class SIDDDatasetLMDB(Dataset):
-    _envs = {}  # Shared cache for LMDB environments
-
     def __init__(self, lmdb_dir, patch_size=128, split="train", split_ratio=0.9, seed=42):
         super().__init__()
         self.lmdb_dir = lmdb_dir
         self.patch_size = patch_size
         self.split = split
+        self.env = None # Will be lazily initialized in __getitem__
         
-        # Use shared cache even for key extraction to avoid "already open" errors
-        self._init_lmdb()
-        env = self.env
-
-        with env.begin() as txn:
+        # Temporarily open LMDB to get keys
+        temp_env = lmdb.open(
+            str(self.lmdb_dir), readonly=True, lock=False, readahead=False, meminit=False
+        )
+        with temp_env.begin() as txn:
             all_keys = sorted([
                 key.decode("ascii") for key, _ in txn.cursor() if key.endswith(b"_gt")
             ])
-        # We don't close the shared env here
+        temp_env.close()
 
         # Deterministic split: Use a local random instance to avoid side effects
         rng = random.Random(seed)
@@ -39,12 +38,15 @@ class SIDDDatasetLMDB(Dataset):
         self.num_images = len(self.keys)
 
     def _init_lmdb(self):
-        if self.lmdb_dir not in SIDDDatasetLMDB._envs:
-            # Increase map_size to avoid issues with large databases, though readonly=True doesn't strictly need it
-            SIDDDatasetLMDB._envs[self.lmdb_dir] = lmdb.open(
-                str(self.lmdb_dir), readonly=True, lock=False, readahead=False, meminit=False, max_readers=126
-            )
-        self.env = SIDDDatasetLMDB._envs[self.lmdb_dir]
+        """Initializes the LMDB environment for the current process."""
+        self.env = lmdb.open(
+            str(self.lmdb_dir), 
+            readonly=True, 
+            lock=False, 
+            readahead=False, 
+            meminit=False, 
+            max_readers=126
+        )
 
     def __len__(self):
         # For training, we use a large virtual epoch to leverage random crops.
@@ -69,8 +71,7 @@ class SIDDDatasetLMDB(Dataset):
         return np.ascontiguousarray(gt), np.ascontiguousarray(noisy)
 
     def __getitem__(self, idx):
-        # The env is already initialized in __init__ and cached in _envs
-        # but we re-assign to self.env for safety in case of serialization
+        # Lazy initialization: Each worker process opens its own LMDB environment.
         if self.env is None:
             self._init_lmdb()
 
@@ -83,12 +84,12 @@ class SIDDDatasetLMDB(Dataset):
             gt_buf = txn.get(gt_key.encode("ascii"))
             noisy_buf = txn.get(noisy_key.encode("ascii"))
 
-        if gt_buf is None or noisy_buf is None:
-            raise KeyError(f"Keys {gt_key} or {noisy_key} not found in LMDB")
+            if gt_buf is None or noisy_buf is None:
+                raise KeyError(f"Keys {gt_key} or {noisy_key} not found in LMDB")
 
-        # Decode
-        gt_img = cv2.imdecode(np.frombuffer(gt_buf, np.uint8), cv2.IMREAD_COLOR)
-        noisy_img = cv2.imdecode(np.frombuffer(noisy_buf, np.uint8), cv2.IMREAD_COLOR)
+            # Decode WHILE transaction is open to ensure buffer validity
+            gt_img = cv2.imdecode(np.frombuffer(gt_buf, np.uint8), cv2.IMREAD_COLOR)
+            noisy_img = cv2.imdecode(np.frombuffer(noisy_buf, np.uint8), cv2.IMREAD_COLOR)
 
         if gt_img is None or noisy_img is None:
             raise ValueError(f"Failed to decode images for keys {gt_key} or {noisy_key}")
