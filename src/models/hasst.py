@@ -51,4 +51,8 @@ class HASST(nn.Module):
 
         # Map back to standard sRGB image dimensions
         out = self.ending(feat) + residual_identity
-        return torch.clamp(out, 0.0, 1.0)
+
+        if self.training:
+            return out
+        else:
+            return torch.clamp(out, 0.0, 1.0)
