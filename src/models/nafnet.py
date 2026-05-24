@@ -46,8 +46,8 @@ class NAFBlock(nn.Module):
         self.norm1 = nn.LayerNorm(c)
         self.norm2 = nn.LayerNorm(c)
 
-        self.beta = nn.Parameter(torch.zeros((1, c, 1, 1)) * 1e-2, requires_grad=True)
-        self.gamma = nn.Parameter(torch.zeros((1, c, 1, 1)) * 1e-2, requires_grad=True)
+        self.beta = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
 
         # Conditional Modulation from LoNPE (2 channels: shot, read)
         self.cond_proj = nn.Sequential(
