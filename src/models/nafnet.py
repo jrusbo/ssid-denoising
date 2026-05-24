@@ -56,11 +56,11 @@ class NAFBlock(nn.Module):
         )
 
     def forward(self, inp, noise_prior=None):
-        # Apply conditional modulation if prior is provided
+        # Apply conditional modulation if prior is provided (Centered around 1.0)
         x_in = inp
         if noise_prior is not None:
             cond_scale = self.cond_proj(noise_prior)
-            x_in = x_in * cond_scale
+            x_in = x_in * (1 + cond_scale)
 
         # 1. Spatial / Attention Branch
         x = self.norm1(x_in.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)

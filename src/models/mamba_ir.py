@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
@@ -114,7 +115,7 @@ class AttentiveStateSpaceBlock(nn.Module):
         if Mamba is not None:
             self.mamba = Mamba(d_model=c, d_state=d_state, d_conv=d_conv, expand=expand)
         else:
-            self.mamba = nn.Identity()
+            self.mamba = None
 
         # Window Attention acts as the local feature mixer
         self.window_attn = WindowAttention(
@@ -122,6 +123,11 @@ class AttentiveStateSpaceBlock(nn.Module):
         )
 
         self.ffn = MambaFFN(c)
+
+        # Stabilization parameters
+        self.mamba_beta = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
+        self.attn_beta = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
+        self.ffn_gamma = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
 
         # Conditional Modulation from LoNPE (2 channels: shot, read)
         self.cond_proj = nn.Sequential(
@@ -132,19 +138,22 @@ class AttentiveStateSpaceBlock(nn.Module):
     def forward(self, x, noise_prior=None):
         B, C, H, W = x.shape
 
-        # Apply conditional modulation if prior is provided
+        # Apply conditional modulation if prior is provided (Centered around 1.0)
         x_in = x
         if noise_prior is not None:
             cond_scale = self.cond_proj(noise_prior)
-            x_in = x_in * cond_scale
+            x_in = x_in * (1 + cond_scale)
 
         # Normalization for mixers
         x_norm_seq = self.norm1(rearrange(x_in, "b c h w -> b (h w) c"))
         x_norm = rearrange(x_norm_seq, "b (h w) c -> b h w c", h=H, w=W)
 
         # 1. Global Branch: Mamba Token Mixer
-        x_m = self.mamba(x_norm_seq)
-        x_m = rearrange(x_m, "b (h w) c -> b c h w", h=H, w=W)
+        if self.mamba is not None:
+            x_m = self.mamba(x_norm_seq)
+            x_m = rearrange(x_m, "b (h w) c -> b c h w", h=H, w=W)
+        else:
+            x_m = 0
 
         # 2. Local Branch: Window Attention
         # Partition windows
@@ -171,12 +180,12 @@ class AttentiveStateSpaceBlock(nn.Module):
 
         x_attn = rearrange(x_attn, "b h w c -> b c h w")
 
-        # Combine parallel mixers with residual
-        x = x_m + x_attn + x
+        # Combine parallel mixers with residual and stabilization scales
+        x = x + x_m * self.mamba_beta + x_attn * self.attn_beta
 
         # 3. Feed-forward Branch
         res = x
         x_f = rearrange(x, "b c h w -> b (h w) c")
         x_f = self.ffn(self.norm2(x_f))
         x_f = rearrange(x_f, "b (h w) c -> b c h w", h=H, w=W)
-        return x_f + res
+        return res + x_f * self.ffn_gamma
