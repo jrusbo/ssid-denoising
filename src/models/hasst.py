@@ -50,5 +50,6 @@ class HASST(nn.Module):
             feat = self.global_blocks[i](feat, noise_prior)
 
         # Map back to standard sRGB image dimensions
-        out = self.ending(feat) + residual_identity
+        # Cast residual_identity to feat.dtype (BF16/FP16) to prevent promotion to FP32
+        out = self.ending(feat) + residual_identity.type_as(feat)
         return torch.clamp(out, 0.0, 1.0)

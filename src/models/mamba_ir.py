@@ -8,8 +8,8 @@ try:
     from mamba_ssm.modules.mamba_simple import Mamba
 except ImportError:
     import warnings
-    warnings.warn("mamba_ssm not found. AttentiveStateSpaceBlock will fallback to nn.Identity() for the global branch. "
-                  "This will significantly degrade performance. Please install mamba-ssm and causal-conv1d.")
+    warnings.warn("mamba_ssm not found. AttentiveStateSpaceBlock will fallback to Zero for the global branch. "
+                  "Please install mamba-ssm and causal-conv1d.")
     Mamba = None
 
 
@@ -142,19 +142,21 @@ class AttentiveStateSpaceBlock(nn.Module):
         x_in = x
         if noise_prior is not None:
             cond_scale = self.cond_proj(noise_prior)
-            x_in = x_in * (1 + cond_scale)
+            # Use type_as to ensure noise modulation matches activation type
+            x_in = x_in * (1 + cond_scale.type_as(x_in))
 
         # Normalization for mixers
-        x_norm_seq = self.norm1(rearrange(x_in, "b c h w -> b (h w) c"))
+        # LayerNorm outputs are cast to feature type explicitly to prevent promotion
+        x_norm_seq = self.norm1(rearrange(x_in, "b c h w -> b (h w) c")).type_as(x_in)
         x_norm = rearrange(x_norm_seq, "b (h w) c -> b h w c", h=H, w=W)
 
         # 1. Global Branch: Mamba Token Mixer
         if self.mamba is not None:
-            # Explicitly cast to FP32 for Mamba if needed, then back to input dtype
-            x_m = self.mamba(x_norm_seq.float()).to(x_norm_seq.dtype)
+            # Explicitly cast to FP32 for Mamba stability, then back to input type_as
+            x_m = self.mamba(x_norm_seq.float()).type_as(x_norm_seq)
             x_m = rearrange(x_m, "b (h w) c -> b c h w", h=H, w=W)
         else:
-            x_m = torch.zeros_like(x_norm).permute(0, 3, 1, 2)
+            x_m = torch.zeros_like(x_in)
 
         # 2. Local Branch: Window Attention
         # Partition windows
@@ -179,15 +181,15 @@ class AttentiveStateSpaceBlock(nn.Module):
         if pad_h > 0 or pad_w > 0:
             x_attn = x_attn[:, :H, :W, :].contiguous()
 
-        x_attn = rearrange(x_attn, "b h w c -> b c h w")
+        x_attn = rearrange(x_attn, "b h w c -> b c h w").type_as(x_in)
 
         # Combine parallel mixers with residual and stabilization scales
-        # Use .to(x.dtype) to prevent FP32 promotion in mixed precision
-        x = x + x_m * self.mamba_beta.to(x.dtype) + x_attn * self.attn_beta.to(x.dtype)
+        # Use .type_as(x) to prevent FP32 promotion in mixed precision
+        x = x + x_m * self.mamba_beta.type_as(x) + x_attn * self.attn_beta.type_as(x)
 
         # 3. Feed-forward Branch
         res = x
         x_f = rearrange(x, "b c h w -> b (h w) c")
-        x_f = self.ffn(self.norm2(x_f))
+        x_f = self.ffn(self.norm2(x_f).type_as(x_f))
         x_f = rearrange(x_f, "b (h w) c -> b c h w", h=H, w=W)
-        return res + x_f * self.ffn_gamma.to(x.dtype)
+        return res + x_f * self.ffn_gamma.type_as(x)

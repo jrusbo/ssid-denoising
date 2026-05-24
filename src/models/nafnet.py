@@ -60,20 +60,20 @@ class NAFBlock(nn.Module):
         x_in = inp
         if noise_prior is not None:
             cond_scale = self.cond_proj(noise_prior)
-            x_in = x_in * (1 + cond_scale)
+            x_in = x_in * (1 + cond_scale.type_as(x_in))
 
         # 1. Spatial / Attention Branch
-        x = self.norm1(x_in.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        x = self.norm1(x_in.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).type_as(x_in)
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.sg(x)
         x = x * self.sca(x)
         x = self.conv3(x)
-        y = inp + x * self.beta.to(inp.dtype)
+        y = inp + x * self.beta.type_as(inp)
 
         # 2. Feed-forward / Channel Branch
-        x = self.norm2(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        x = self.norm2(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).type_as(y)
         x = self.conv4(x)
         x = self.sg(x)
         x = self.conv5(x)
-        return y + x * self.gamma.to(y.dtype)
+        return y + x * self.gamma.type_as(y)
