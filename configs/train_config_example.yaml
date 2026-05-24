@@ -8,7 +8,7 @@
 seed: 42                      # Random seed for reproducibility (PyTorch, Numpy, Python).
 max_hours: null               # Maximum training duration in hours. Set to null (or leave empty) to deactivate.
                               # Useful for environments with time limits like Kaggle (12h) or Colab.
-use_compile: true             # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
+use_compile: false             # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
 mixed_precision: "no"         # Mixed precision mode: "no", "fp16", or "bf16".
                               # "fp16" is recommended for most NVIDIA GPUs. "bf16" is better for Ampere+ (A100, 30-series).
 
