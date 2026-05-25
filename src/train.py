@@ -228,12 +228,34 @@ def run_training(cfg: Config):
 
     criterion = CompositeLoss(cfg).to(accelerator.device)
 
+    # Separate parameters so AdamW doesn't apply weight decay to biases and LayerNorms
+    decay = []
+    no_decay = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        # Biases, Norm weights, and scalar variables (beta, gamma) get 0 weight decay
+        if param.ndim <= 1 or name.endswith(".bias"):
+            no_decay.append(param)
+        else:
+            decay.append(param)
+
+    optim_groups = [
+        {"params": decay, "weight_decay": cfg.weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+
     if cfg.optimizer_type == "Adam":
         optimizer = optim.Adam(
-            model.parameters(),
+            optim_groups,
             lr=cfg.lr_initial,
             betas=(cfg.beta1, cfg.beta2),
-            weight_decay=cfg.weight_decay,
+        )
+    elif cfg.optimizer_type == "AdamW":
+        optimizer = optim.AdamW(
+            optim_groups,
+            lr=cfg.lr_initial,
+            betas=(cfg.beta1, cfg.beta2),
         )
     else:
         raise ValueError(f"Unsupported optimizer: {cfg.optimizer_type}")

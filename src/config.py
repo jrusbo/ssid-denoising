@@ -43,8 +43,8 @@ class Config:
     phase_milestones: List[int] = field(default_factory=lambda: [100000, 200000])
 
     # --- Optimizer ---
-    optimizer_type: str = "Adam"
-    lr_initial: float = 1e-3
+    optimizer_type: str = "AdamW"
+    lr_initial: float = 1e-4
     lr_min: float = 1e-7
     beta1: float = 0.9
     beta2: float = 0.999

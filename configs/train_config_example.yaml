@@ -45,8 +45,8 @@ batch_sizes: [4, 2, 1, 1]        # Batch size per GPU for each phase. Adjust bas
 phase_milestones: [150000, 300000, 420000] # Iteration counts where the next phase begins.
 
 # --- Optimizer & Learning Rate ---
-optimizer_type: "Adam"        # Type of optimizer. (Currently "Adam" is implemented).
-lr_initial: 2.0e-4            # Initial learning rate.
+optimizer_type: "AdamW"       # Type of optimizer. (Currently "Adam" or "AdamW").
+lr_initial: 1.0e-4            # Initial learning rate. Decayed slightly due to extremely small batch scale limits.
 lr_min: 1.0e-07               # Minimum learning rate for the Cosine Annealing scheduler.
 beta1: 0.9                    # Adam optimizer's beta1 parameter (momentum).
 beta2: 0.999                  # Adam optimizer's beta2 parameter (RMSprop-like).
