@@ -33,6 +33,10 @@ class HASST(nn.Module):
         # 4. Reconstruction Output Block
         self.ending = nn.Conv2d(embed_dim, out_channels, kernel_size=3, padding=1)
 
+        # Zero-initialize the global residual so the network starts as an identity function
+        nn.init.zeros_(self.ending.weight)
+        nn.init.zeros_(self.ending.bias)
+
     def forward(self, x):
         # Global residual hook
         residual_identity = x

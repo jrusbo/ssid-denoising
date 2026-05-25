@@ -37,6 +37,9 @@ class NAFBlock(nn.Module):
             nn.Conv2d(dw_channel // 2, dw_channel // 2, kernel_size=1, bias=True),
         )
 
+        # Initialize SCA bias to 1.0 to allow signal pass-through at training start
+        nn.init.constant_(self.sca[1].bias, 1.0)
+
         self.sg = SimpleGate()
 
         ffn_channel = c * ffn_expand
