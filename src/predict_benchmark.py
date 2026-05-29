@@ -73,8 +73,8 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
             # Inference
             with torch.no_grad():
                 if use_tta:
-                    # 8x Geometric Self-Ensemble
-                    pred_tensor = engine.forward_tta(block_tensor)
+                    # 8x Geometric Self-Ensemble with TLC wrapper
+                    pred_tensor = engine.forward_tlc(block_tensor, patch_size=256)
                 else:
                     # Single Forward Pass
                     pred_tensor = model(block_tensor)

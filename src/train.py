@@ -145,6 +145,7 @@ def run_training(cfg: Config):
     best_psnr = 0.0
     wandb_run_id = None
     rng_states = None
+    checkpoint_data = None
 
     base_output_dir = Path(cfg.output_dir).resolve()
     base_output_dir.mkdir(parents=True, exist_ok=True)
@@ -210,12 +211,12 @@ def run_training(cfg: Config):
 
     # Update cfg.output_dir to be run-specific (Using human-readable run name)
     # On multi-GPU, only the main process has a wandb.run. Worker processes need a fallback.
-    run_name = (wandb.run.name if (wandb.run is not None) else None) or wandb_run_id or "train_run"
+    run_name = (wandb.run.name if getattr(wandb, "run", None) is not None else None) or wandb_run_id or "train_run"
     cfg.output_dir = base_output_dir / str(run_name)
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     
     # Update wandb config with the final run-specific output directory
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and getattr(wandb, "run", None) is not None:
         wandb.config.update({"output_dir": str(cfg.output_dir)}, allow_val_change=True)
 
     # 3. Model, Loss, and Optimizer Setup
@@ -278,7 +279,7 @@ def run_training(cfg: Config):
     )
 
     # Now load weights if resuming (Into PREPARED objects)
-    if cfg.resume and 'checkpoint_data' in locals():
+    if cfg.resume and checkpoint_data is not None:
         accelerator.print(f"Restoring weights and states from checkpoint (Step: {global_step})...")
         
         # Load model weights into the unwrapped model
@@ -288,7 +289,7 @@ def run_training(cfg: Config):
         # Load optimizer and scheduler states
         optimizer.load_state_dict(checkpoint_data["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint_data["scheduler_state_dict"])
-        
+
         # Restore RNG states for full reproducibility
         if rng_states:
             random.setstate(rng_states["python"])
@@ -316,7 +317,8 @@ def run_training(cfg: Config):
     if accelerator.is_main_process:
         num_params = sum(p.numel() for p in model.parameters())
         accelerator.print(f"Total model parameters: {num_params:,}")
-        wandb.config.update({"model/parameters": num_params})
+        if getattr(wandb, "run", None) is not None:
+            wandb.config.update({"model/parameters": num_params})
 
     progress_bar = tqdm(
         total=cfg.total_iters,
@@ -457,7 +459,7 @@ def run_training(cfg: Config):
                     accelerator.free_memory()
                     train_loader, val_loader = create_dataloaders(cfg, patch_size, batch_size)
                     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
-                    break 
+                    break
 
                 if max_seconds and (time.time() - start_time > max_seconds):
                     break

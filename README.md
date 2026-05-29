@@ -54,7 +54,7 @@ HASST now supports processing multiple experiments in sequence. You can point th
 **Run a single experiment:**
 ```bash
 # Point to your YAML file
-uv run accelerate launch src/train.py --config configs/train_config.yaml
+uv run accelerate launch src/train.py --config configs/my_run.yaml
 ```
 
 **Batch process multiple experiments:**

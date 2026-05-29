@@ -6,13 +6,19 @@ import torch
 
 def apply_noise_cutmix(noisy_a, gt_a, noisy_b, gt_b, alpha=0.2):
     """
-    NoiseCutMix: Cuts a random patch from image B and mixes it into image A.
-    Crucially, it blends both the noisy input and the ground truth identically.
+    NoiseCutMix: Extracts the noise residuals (Difference between Noisy and Ground Truth)
+    from two distinct image patches and mixes them before applying them to a structural baseline.
     """
     if random.random() > 0.5:
         return noisy_a, gt_a
 
-    B, C, H, W = noisy_a.shape
+    B, C, H, W = noisy_a.shape if len(noisy_a.shape) == 4 else (1, *noisy_a.shape)
+    if len(noisy_a.shape) == 3:
+        noisy_a = noisy_a.unsqueeze(0)
+        gt_a = gt_a.unsqueeze(0)
+        noisy_b = noisy_b.unsqueeze(0)
+        gt_b = gt_b.unsqueeze(0)
+
     lam = np.random.beta(alpha, alpha)
 
     cx = np.random.randint(W)
@@ -25,10 +31,25 @@ def apply_noise_cutmix(noisy_a, gt_a, noisy_b, gt_b, alpha=0.2):
     x2 = np.clip(cx + cut_w // 2, 0, W)
     y2 = np.clip(cy + cut_h // 2, 0, H)
 
-    noisy_a[:, :, y1:y2, x1:x2] = noisy_b[:, :, y1:y2, x1:x2]
-    gt_a[:, :, y1:y2, x1:x2] = gt_b[:, :, y1:y2, x1:x2]
+    # Extract noise residuals
+    noise_res_a = noisy_a - gt_a
+    noise_res_b = noisy_b - gt_b
 
-    return noisy_a, gt_a
+    # Structural baseline: we can use gt_a as the baseline.
+    # We mix the noise residuals according to the cutmix mask.
+    mixed_noise = noise_res_a.clone()
+    mixed_noise[:, :, y1:y2, x1:x2] = noise_res_b[:, :, y1:y2, x1:x2]
+
+    # Apply mixed noise to the baseline (gt_a)
+    mixed_noisy = gt_a + mixed_noise
+
+    # Both images have the same ground truth structure now (gt_a)
+    mixed_gt = gt_a
+
+    if B == 1:
+        return mixed_noisy.squeeze(0), mixed_gt.squeeze(0)
+
+    return mixed_noisy, mixed_gt
 
 
 def adversarial_frequency_mixup(img1, img2, alpha=0.5):

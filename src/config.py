@@ -38,13 +38,13 @@ class Config:
     # --- Progressive Training Schedule ---
     # Phase 1: 128x128 (Fast iterations, global features), Phase 2: 256x256, Phase 3: 384x384 (Refinement)
     total_iters: int = 300000
-    patch_sizes: List[int] = field(default_factory=lambda: [128, 256, 384])
-    batch_sizes: List[int] = field(default_factory=lambda: [8, 4, 1])  # Per GPU
-    phase_milestones: List[int] = field(default_factory=lambda: [100000, 200000])
+    patch_sizes: List[int] = field(default_factory=lambda: [128, 160, 192, 256, 384])
+    batch_sizes: List[int] = field(default_factory=lambda: [8, 5, 4, 2, 1])  # Per GPU
+    phase_milestones: List[int] = field(default_factory=lambda: [60000, 120000, 180000, 240000])
 
     # --- Optimizer ---
     optimizer_type: str = "AdamW"
-    lr_initial: float = 1e-4
+    lr_initial: float = 2e-4
     lr_min: float = 1e-7
     beta1: float = 0.9
     beta2: float = 0.999
@@ -53,6 +53,7 @@ class Config:
     # --- Loss Weights ---
     charbonnier_weight: float = 1.0
     wavelet_weight: float = 0.1
+    ssim_weight: float = 0.1
 
     # --- DDP / DataLoader Settings ---
     num_workers: int = 4
@@ -62,7 +63,7 @@ class Config:
         """Ensures that numeric types are correctly cast from YAML and paths are Path objects."""
         float_fields = [
             "max_hours", "lr_initial", "lr_min", "beta1", "beta2",
-            "weight_decay", "charbonnier_weight", "wavelet_weight"
+            "weight_decay", "charbonnier_weight", "wavelet_weight", "ssim_weight"
         ]
         int_fields = [
             "seed", "embed_dim", "num_blocks", "in_channels", "out_channels",

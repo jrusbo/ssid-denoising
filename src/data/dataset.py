@@ -5,6 +5,7 @@ import lmdb
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from data.augmentations import apply_noise_cutmix, adversarial_frequency_mixup
 
 
 class SIDDDatasetLMDB(Dataset):
@@ -70,12 +71,11 @@ class SIDDDatasetLMDB(Dataset):
 
         return np.ascontiguousarray(gt), np.ascontiguousarray(noisy)
 
-    def __getitem__(self, idx):
-        # Lazy initialization: Each worker process opens its own LMDB environment.
+    def _get_crop(self, idx):
+        """Gets a decoded and cropped image pair from LMDB for a given index."""
         if self.env is None:
             self._init_lmdb()
 
-        # Get actual image index
         img_idx = idx % self.num_images
         gt_key = self.keys[img_idx]
         noisy_key = gt_key.replace("_gt", "_noisy")
@@ -87,43 +87,57 @@ class SIDDDatasetLMDB(Dataset):
             if gt_buf is None or noisy_buf is None:
                 raise KeyError(f"Keys {gt_key} or {noisy_key} not found in LMDB")
 
-            # Decode WHILE transaction is open to ensure buffer validity
             gt_img = cv2.imdecode(np.frombuffer(gt_buf, np.uint8), cv2.IMREAD_COLOR)
             noisy_img = cv2.imdecode(np.frombuffer(noisy_buf, np.uint8), cv2.IMREAD_COLOR)
 
-        if gt_img is None or noisy_img is None:
-            raise ValueError(f"Failed to decode images for keys {gt_key} or {noisy_key}")
-
-        # Convert BGR to RGB (OpenCV default is BGR, but models expect RGB)
         gt_img = cv2.cvtColor(gt_img, cv2.COLOR_BGR2RGB)
         noisy_img = cv2.cvtColor(noisy_img, cv2.COLOR_BGR2RGB)
 
-        # Crop
         H, W, _ = gt_img.shape
+
+        # Prevent out-of-bounds by padding if the image is smaller than the requested patch_size
+        pad_h = max(0, self.patch_size - H)
+        pad_w = max(0, self.patch_size - W)
+        if pad_h > 0 or pad_w > 0:
+            gt_img = np.pad(gt_img, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+            noisy_img = np.pad(noisy_img, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+            H, W, _ = gt_img.shape
+
         if self.split == "train":
-            rnd_h = random.randint(0, max(0, H - self.patch_size))
-            rnd_w = random.randint(0, max(0, W - self.patch_size))
-            gt_crop = gt_img[
-                rnd_h : rnd_h + self.patch_size, rnd_w : rnd_w + self.patch_size, :
-            ]
-            noisy_crop = noisy_img[
-                rnd_h : rnd_h + self.patch_size, rnd_w : rnd_w + self.patch_size, :
-            ]
-            # Augment
+            rnd_h = random.randint(0, H - self.patch_size)
+            rnd_w = random.randint(0, W - self.patch_size)
+            gt_crop = gt_img[rnd_h : rnd_h + self.patch_size, rnd_w : rnd_w + self.patch_size, :]
+            noisy_crop = noisy_img[rnd_h : rnd_h + self.patch_size, rnd_w : rnd_w + self.patch_size, :]
             gt_crop, noisy_crop = self._augment(gt_crop, noisy_crop)
         else:
-            # Deterministic center crop for validation
             start_h = (H - self.patch_size) // 2
             start_w = (W - self.patch_size) // 2
-            gt_crop = gt_img[
-                start_h : start_h + self.patch_size, start_w : start_w + self.patch_size, :
-            ]
-            noisy_crop = noisy_img[
-                start_h : start_h + self.patch_size, start_w : start_w + self.patch_size, :
-            ]
+            gt_crop = gt_img[start_h : start_h + self.patch_size, start_w : start_w + self.patch_size, :]
+            noisy_crop = noisy_img[start_h : start_h + self.patch_size, start_w : start_w + self.patch_size, :]
 
-        # Convert to PyTorch Tensors [0, 1] range, (C, H, W)
         gt_tensor = torch.from_numpy(gt_crop).float().permute(2, 0, 1) / 255.0
         noisy_tensor = torch.from_numpy(noisy_crop).float().permute(2, 0, 1) / 255.0
+
+        return noisy_tensor, gt_tensor
+
+    def __getitem__(self, idx):
+        # Lazy initialization
+        noisy_tensor, gt_tensor = self._get_crop(idx)
+
+        # Apply advanced augmentations only during training
+        if self.split == "train":
+            # 1) Adversarial Frequency Mixup (AFM)
+            if random.random() < 0.5:
+                # Pick a random second image
+                idx2 = random.randint(0, self.num_images - 1)
+                noisy_b, _ = self._get_crop(idx2)
+                alpha = random.uniform(0.1, 0.4)
+                noisy_tensor = adversarial_frequency_mixup(noisy_tensor, noisy_b, alpha=alpha)
+
+            # 2) NoiseCutMix
+            if random.random() < 0.5:
+                idx3 = random.randint(0, self.num_images - 1)
+                noisy_c, gt_c = self._get_crop(idx3)
+                noisy_tensor, gt_tensor = apply_noise_cutmix(noisy_tensor, gt_tensor, noisy_c, gt_c)
 
         return noisy_tensor, gt_tensor
