@@ -83,10 +83,19 @@ def evaluate_pipeline(model, dataloader, accelerator):
 def create_dataloaders(cfg, patch_size, batch_size):
     """Dynamically creates dataloaders for the progressive learning schedule."""
     train_dataset = SIDDDatasetLMDB(
-        lmdb_dir=cfg.lmdb_dir, patch_size=patch_size, split="train", seed=cfg.seed
+        lmdb_dir=cfg.lmdb_dir,
+        patch_size=patch_size,
+        split="train",
+        split_ratio=cfg.split_ratio,
+        seed=cfg.seed,
     )
+
     val_dataset = SIDDDatasetLMDB(
-        lmdb_dir=cfg.lmdb_dir, patch_size=patch_size, split="val", seed=cfg.seed
+        lmdb_dir=cfg.lmdb_dir,
+        patch_size=256,
+        split="val",
+        split_ratio=cfg.split_ratio,
+        seed=cfg.seed,
     )
 
     train_loader = DataLoader(

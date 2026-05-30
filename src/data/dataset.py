@@ -56,17 +56,33 @@ class SIDDDatasetLMDB(Dataset):
         return self.num_images
 
     def _augment(self, gt, noisy):
-        """Standard geometric self-ensembling (flips and 90/180/270 rotations)."""
-        hflip = random.random() < 0.5
-        vflip = random.random() < 0.5
-        rot90 = random.random() < 0.5
+        """Apply one of the 8 safe geometric augmentations for paired denoising."""
 
-        if hflip:
-            gt, noisy = gt[:, ::-1, :], noisy[:, ::-1, :]
-        if vflip:
-            gt, noisy = gt[::-1, :, :], noisy[::-1, :, :]
-        if rot90:
-            gt, noisy = gt.transpose(1, 0, 2), noisy.transpose(1, 0, 2)
+        mode = random.randint(0, 7)
+
+        if mode == 0:
+            pass
+        elif mode == 1:
+            gt = np.flipud(gt)
+            noisy = np.flipud(noisy)
+        elif mode == 2:
+            gt = np.rot90(gt, k=1)
+            noisy = np.rot90(noisy, k=1)
+        elif mode == 3:
+            gt = np.flipud(np.rot90(gt, k=1))
+            noisy = np.flipud(np.rot90(noisy, k=1))
+        elif mode == 4:
+            gt = np.rot90(gt, k=2)
+            noisy = np.rot90(noisy, k=2)
+        elif mode == 5:
+            gt = np.flipud(np.rot90(gt, k=2))
+            noisy = np.flipud(np.rot90(noisy, k=2))
+        elif mode == 6:
+            gt = np.rot90(gt, k=3)
+            noisy = np.rot90(noisy, k=3)
+        elif mode == 7:
+            gt = np.flipud(np.rot90(gt, k=3))
+            noisy = np.flipud(np.rot90(noisy, k=3))
 
         return np.ascontiguousarray(gt), np.ascontiguousarray(noisy)
 

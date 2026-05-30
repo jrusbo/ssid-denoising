@@ -10,6 +10,7 @@ import yaml
 class Config:
     # --- Kaggle / Training Settings ---
     seed: int = 42
+    split_ratio: float = 0.95
     max_hours: Optional[float] = 11.5
     use_compile: bool = True
     mixed_precision: str = "fp16"  # "no", "fp16", "bf16"
@@ -62,7 +63,7 @@ class Config:
         """Ensures that numeric types are correctly cast from YAML and paths are Path objects."""
         float_fields = [
             "max_hours", "lr_initial", "lr_min", "beta1", "beta2",
-            "weight_decay", "charbonnier_weight", "wavelet_weight"
+            "weight_decay", "charbonnier_weight", "wavelet_weight", "split_ratio"
         ]
         int_fields = [
             "seed", "embed_dim", "num_blocks", "in_channels", "out_channels",
