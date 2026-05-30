@@ -24,7 +24,7 @@ resume_path: null             # Specific path to a .pth checkpoint file to resum
 
 # --- Model Hyperparameters ---
 embed_dim: 64                 # The base embedding dimension for the network. Higher values increase model capacity but use more VRAM.
-num_blocks: 4                 # Number of interleaved HASST blocks (Local NAFBlock + Global Mamba ASSB).
+num_blocks: 8                 # Number of interleaved HASST blocks (Local NAFBlock + Global Mamba ASSB).
 in_channels: 3                # Number of input color channels (3 for RGB).
 out_channels: 3               # Number of output color channels (3 for RGB).
 
