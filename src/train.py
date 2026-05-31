@@ -6,9 +6,6 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-# Timing imports
-_start_imports = time.time()
-
 import numpy as np
 import torch
 import torch.optim as optim
@@ -26,7 +23,6 @@ from models.hasst import HASST
 from utils.logger import WandBValidationLogger
 from utils.metrics import compute_psnr, compute_ssim
 
-_end_imports = time.time()
 
 # Setup logging for multi-config runs
 logging.basicConfig(level=logging.INFO)
