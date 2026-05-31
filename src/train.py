@@ -552,9 +552,6 @@ def run_training(cfg: Config):
 
 
 def main():
-    # Log import timing immediately
-    print(f"[{time.strftime('%H:%M:%S')}] Imports completed in {_end_imports - _start_imports:.2f}s")
-    
     parser = argparse.ArgumentParser(description="HASST Multi-Config Training Script")
     parser.add_argument(
         "--config",
