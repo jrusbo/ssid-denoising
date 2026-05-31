@@ -6,6 +6,9 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+# Timing imports
+_start_imports = time.time()
+
 import numpy as np
 import torch
 import torch.optim as optim
@@ -22,6 +25,8 @@ from losses.loss import CompositeLoss
 from models.hasst import HASST
 from utils.logger import WandBValidationLogger
 from utils.metrics import compute_psnr, compute_ssim
+
+_end_imports = time.time()
 
 # Setup logging for multi-config runs
 logging.basicConfig(level=logging.INFO)
@@ -551,6 +556,9 @@ def run_training(cfg: Config):
 
 
 def main():
+    # Log import timing immediately
+    print(f"[{time.strftime('%H:%M:%S')}] Imports completed in {_end_imports - _start_imports:.2f}s")
+    
     parser = argparse.ArgumentParser(description="HASST Multi-Config Training Script")
     parser.add_argument(
         "--config",

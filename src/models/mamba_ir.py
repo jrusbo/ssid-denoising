@@ -2,14 +2,22 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-# Using the officially maintained Mamba implementation
-try:
-    from mamba_ssm.modules.mamba_simple import Mamba
-except ImportError:
-    import warnings
-    warnings.warn("mamba_ssm not found. AttentiveStateSpaceBlock will fallback to Zero for the global branch. "
-                  "Please install mamba-ssm and causal-conv1d.")
-    Mamba = None
+# Lazy import for Mamba to speed up script startup
+Mamba = None
+
+def get_mamba_class():
+    global Mamba
+    if Mamba is not None:
+        return Mamba
+    try:
+        from mamba_ssm.modules.mamba_simple import Mamba as MambaClass
+        Mamba = MambaClass
+    except ImportError:
+        import warnings
+        warnings.warn("mamba_ssm not found. AttentiveStateSpaceBlock will fallback to Zero for the global branch. "
+                      "Please install mamba-ssm and causal-conv1d.")
+        Mamba = False # Mark as not found
+    return Mamba
 
 
 class MambaFFN(nn.Module):
@@ -47,8 +55,9 @@ class AttentiveStateSpaceBlock(nn.Module):
         self.sgn_proj = nn.Linear(c, 1)
 
         # Mamba acts as the non-causal token mixer
-        if Mamba is not None:
-            self.mamba = Mamba(d_model=c, d_state=d_state, d_conv=d_conv, expand=expand)
+        MambaClass = get_mamba_class()
+        if MambaClass:
+            self.mamba = MambaClass(d_model=c, d_state=d_state, d_conv=d_conv, expand=expand)
         else:
             self.mamba = None
 
