@@ -76,7 +76,7 @@ def create_lmdb(data_dir, lmdb_path, commit_interval=100):
 
     txn.commit()
     env.close()
-    print("LMDB creation complete!")
+    print(f"LMDB creation complete! Total images: {len(image_pairs)}")
 
 
 if __name__ == "__main__":
