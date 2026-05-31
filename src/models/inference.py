@@ -78,6 +78,11 @@ class HASSTInferenceEngine:
         and smoothly merges them using adaptive blending, ensuring
         global operations behave consistently.
         """
+        B, C, H, W = x.shape
+        # Optimization: If the image matches patch_size exactly, skip overlapping logic
+        if H == patch_size and W == patch_size:
+            return self.forward_tta(x)
+            
         return self.inference_patch_overlapping(x, patch_size=patch_size, stride=patch_size // 2)
 
     @torch.no_grad()

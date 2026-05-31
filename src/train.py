@@ -17,6 +17,7 @@ from tqdm import tqdm
 # Import our custom modules
 from config import Config
 from data.dataset import SIDDDatasetLMDB
+from data.augmentations import adversarial_frequency_mixup, apply_noise_cutmix, reset_augmentation_buffers
 from losses.loss import CompositeLoss
 from models.hasst import HASST
 from utils.logger import WandBValidationLogger
@@ -28,11 +29,18 @@ logger_cli = logging.getLogger(__name__)
 
 
 def get_raw_model(model, accelerator):
-    """Unwraps model from Accelerator and torch.compile for saving."""
-    unwrapped = accelerator.unwrap_model(model)
-    if hasattr(unwrapped, "_orig_mod"):
-        unwrapped = unwrapped._orig_mod
-    return unwrapped
+    """
+    Unwraps model from Accelerator and torch.compile for saving.
+    Handles nested wrapping recursively to ensure we get the base nn.Module.
+    """
+    while hasattr(model, "module") or hasattr(model, "_orig_mod"):
+        if hasattr(model, "module"):
+            model = model.module
+        if hasattr(model, "_orig_mod"):
+            model = model._orig_mod
+    
+    # Final safety check with accelerator.unwrap_model (handles more cases)
+    return accelerator.unwrap_model(model)
 
 
 @torch.no_grad()
@@ -53,18 +61,18 @@ def evaluate_pipeline(model, dataloader, accelerator):
         disable=not accelerator.is_main_process,
         leave=False,
     )
-    for i, (noisy, gt) in enumerate(pbar):
-        pred = model(noisy)
-        
-        # Save one sample for visualization (from the main process)
-        if i == 0:
-            val_sample = (noisy.detach(), pred.detach(), gt.detach())
+    with torch.no_grad():
+        for i, (noisy, gt) in enumerate(pbar):
+            pred = model(noisy)
+            
+            # Save one sample for visualization (from the main process)
+            if i == 0:
+                val_sample = (noisy.detach(), pred.detach(), gt.detach())
 
-        # Batch parsing metric accumulations (Calculated locally per GPU)
-        for b in range(pred.shape[0]):
-            local_psnr += compute_psnr(pred[b], gt[b])
-            local_ssim += compute_ssim(pred[b], gt[b])
-            local_samples += 1
+            # Batch parsing metric accumulations (Calculated locally per GPU)
+            local_psnr += compute_psnr(pred, gt)
+            local_ssim += compute_ssim(pred, gt, size_average=False)
+            local_samples += pred.shape[0]
 
     # Convert to tensors for reduction
     metrics = torch.tensor([local_psnr, local_ssim, float(local_samples)], device=accelerator.device)
@@ -96,6 +104,7 @@ def create_dataloaders(cfg, patch_size, batch_size):
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
         drop_last=True,
+        persistent_workers=(cfg.num_workers > 0),
     )
 
     val_loader = DataLoader(
@@ -104,6 +113,7 @@ def create_dataloaders(cfg, patch_size, batch_size):
         shuffle=False,
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
+        persistent_workers=(cfg.num_workers > 0),
     )
 
     return train_loader, val_loader
@@ -116,6 +126,9 @@ def run_training(cfg: Config):
     torch.manual_seed(cfg.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.seed)
+    
+    # Reset global augmentation buffers to prevent cross-run contamination
+    reset_augmentation_buffers()
 
     # 1. Initialize HuggingFace Accelerator
     accelerator = Accelerator(mixed_precision=cfg.mixed_precision)
@@ -235,8 +248,20 @@ def run_training(cfg: Config):
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        # Biases, Norm weights, and scalar variables (beta, gamma) get 0 weight decay
-        if param.ndim <= 1 or name.endswith(".bias"):
+        
+        # We exclude from weight decay:
+        # 1. Biases (usually 1D)
+        # 2. Norm weights/biases (can be 1D or 4D like in LayerNorm2d)
+        # 3. Scale parameters like beta, gamma (usually 4D (1, C, 1, 1))
+        # 4. Positional embeddings or prompts
+        
+        is_bias = name.endswith(".bias")
+        is_low_dim = param.ndim <= 1
+        is_norm = "norm" in name.lower()
+        is_scale = any(x in name.lower() for x in ["beta", "gamma", "alpha"])
+        is_prompt = "prompt" in name.lower()
+
+        if is_bias or is_low_dim or is_norm or is_scale or is_prompt:
             no_decay.append(param)
         else:
             decay.append(param)
@@ -373,6 +398,15 @@ def run_training(cfg: Config):
             for noisy, gt in train_loader:
                 if global_step >= cfg.total_iters:
                     break
+                
+                # Apply advanced augmentations on GPU
+                if random.random() < 0.5:
+                    noisy = adversarial_frequency_mixup(noisy, alpha=random.uniform(0.1, 0.4))
+                if random.random() < 0.5:
+                    noisy, gt = apply_noise_cutmix(noisy, gt)
+                
+                # Ensure augmented inputs are clamped to [0, 1] range
+                noisy = torch.clamp(noisy, 0.0, 1.0)
 
                 with accelerator.autocast():
                     pred = model(noisy)

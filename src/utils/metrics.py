@@ -3,17 +3,37 @@ import torch.nn.functional as F
 import numpy as np
 
 
+_ssim_window_cache = {}
+
+@torch.no_grad()
 def compute_psnr(pred, gt):
     """
     Computes PSNR on GPU for speed.
     Assumes tensors are in [0, 1] range.
+    Can handle batched or single image tensors.
     """
-    mse = F.mse_loss(pred, gt)
-    if mse == 0:
-        return 100.0
-    return 10 * torch.log10(1.0 / mse).item()
+    # Ensure inputs are tensors and on the same device
+    if not isinstance(pred, torch.Tensor):
+        pred = torch.tensor(pred)
+    if not isinstance(gt, torch.Tensor):
+        gt = torch.tensor(gt)
+
+    mse = F.mse_loss(pred, gt, reduction="none")
+    
+    # Average across all dimensions except the batch dimension
+    if mse.dim() == 4:
+        # Batched input (B, C, H, W)
+        mse = mse.view(mse.size(0), -1).mean(dim=1)
+        psnr = 10 * torch.log10(1.0 / (mse + 1e-10))
+        return psnr.sum().item()
+    else:
+        # Single image (C, H, W) or (H, W)
+        mse = mse.mean()
+        psnr = 10 * torch.log10(1.0 / (mse + 1e-10))
+        return psnr.item()
 
 
+@torch.no_grad()
 def compute_ssim(pred, gt, window_size=11, size_average=True):
     """
     Computes SSIM on GPU.
@@ -26,7 +46,14 @@ def compute_ssim(pred, gt, window_size=11, size_average=True):
 
     device = pred.device
     channel = pred.size(1)
-    window = _create_window(window_size, channel).to(device)
+    
+    # Cache key: (window_size, channel, device)
+    cache_key = (window_size, channel, str(device))
+    global _ssim_window_cache
+    if cache_key not in _ssim_window_cache:
+        _ssim_window_cache[cache_key] = _create_window(window_size, channel).to(device)
+    
+    window = _ssim_window_cache[cache_key]
 
     mu1 = F.conv2d(pred, window, padding=window_size // 2, groups=channel)
     mu2 = F.conv2d(gt, window, padding=window_size // 2, groups=channel)
@@ -47,7 +74,9 @@ def compute_ssim(pred, gt, window_size=11, size_average=True):
     if size_average:
         return ssim_map.mean().item()
     else:
-        return ssim_map.mean(1).mean(1).mean(1).item()
+        # Average spatially and across channels, but keep batch dimension if needed
+        # (Though current evaluate_pipeline expects a single scalar sum/average)
+        return ssim_map.mean(dim=(1, 2, 3)).sum().item()
 
 
 def _gaussian(window_size, sigma):

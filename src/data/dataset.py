@@ -122,22 +122,4 @@ class SIDDDatasetLMDB(Dataset):
 
     def __getitem__(self, idx):
         # Lazy initialization
-        noisy_tensor, gt_tensor = self._get_crop(idx)
-
-        # Apply advanced augmentations only during training
-        if self.split == "train":
-            # 1) Adversarial Frequency Mixup (AFM)
-            if random.random() < 0.5:
-                # Pick a random second image
-                idx2 = random.randint(0, self.num_images - 1)
-                noisy_b, _ = self._get_crop(idx2)
-                alpha = random.uniform(0.1, 0.4)
-                noisy_tensor = adversarial_frequency_mixup(noisy_tensor, noisy_b, alpha=alpha)
-
-            # 2) NoiseCutMix
-            if random.random() < 0.5:
-                idx3 = random.randint(0, self.num_images - 1)
-                noisy_c, gt_c = self._get_crop(idx3)
-                noisy_tensor, gt_tensor = apply_noise_cutmix(noisy_tensor, gt_tensor, noisy_c, gt_c)
-
-        return noisy_tensor, gt_tensor
+        return self._get_crop(idx)

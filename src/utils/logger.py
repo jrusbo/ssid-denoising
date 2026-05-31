@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import torch
 import wandb
 from pathlib import Path
 
@@ -31,28 +32,45 @@ class WandBValidationLogger:
             return
         wandb.log(metrics_dict, step=step, commit=commit)
 
-    def log_gradients(self, step, model, commit=True):
-        """Logs gradient norms to spot gradient explosions or vanishing layers early."""
+    def log_gradients(self, step, model, commit=True, force_detailed=False):
+        """
+        Logs gradient norms. Optimized to avoid multiple GPU-CPU syncs.
+        Individual layer norms are only logged if force_detailed=True or at val_freq.
+        """
         if not self.is_main_process:
             return
 
-        metrics = {}
-        total_grad_norm = 0.0
+        # Detailed logging is expensive; do it sparingly
+        log_detailed = force_detailed or (step % self.val_freq == 0)
         
-        # Log global norm and check for specific modules if possible
+        names = []
+        norms = []
+        
         for name, p in model.named_parameters():
             if p.grad is not None:
-                param_norm = p.grad.norm(2).item()
-                total_grad_norm += param_norm ** 2
-                
-                # Log norms for major components (e.g., specific blocks or layers)
-                # but limit to avoid overwhelming wandb
-                if "weight" in name and ("conv" in name or "attn" in name):
-                    # Shorten name for readability in wandb
-                    short_name = name.replace("module.", "").replace("_orig_mod.", "")
-                    metrics[f"grads/{short_name}"] = param_norm
+                # Store the tensor norm (still on GPU)
+                names.append(name)
+                norms.append(p.grad.norm(2))
 
-        metrics["telemetry/total_gradient_norm"] = total_grad_norm**0.5
+        if not norms:
+            return
+
+        # One single sync point: move all norms to CPU at once
+        norms_cpu = torch.stack(norms).cpu().numpy()
+        
+        metrics = {}
+        total_grad_norm_sq = 0.0
+        
+        for i, name in enumerate(names):
+            norm_val = norms_cpu[i]
+            total_grad_norm_sq += norm_val ** 2
+            
+            if log_detailed:
+                if "weight" in name and ("conv" in name or "attn" in name):
+                    short_name = name.replace("module.", "").replace("_orig_mod.", "")
+                    metrics[f"grads/{short_name}"] = norm_val
+
+        metrics["telemetry/total_gradient_norm"] = total_grad_norm_sq**0.5
         wandb.log(metrics, step=step, commit=commit)
 
     def log_visual_artifacts(self, step, noisy_tensor, pred_tensor, gt_tensor, prefix="visuals", commit=True):

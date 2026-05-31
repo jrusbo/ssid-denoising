@@ -41,8 +41,8 @@ class WaveletLoss(nn.Module):
         pad_w = x.shape[-1] % 2
         pad_h = x.shape[-2] % 2
         if pad_w != 0 or pad_h != 0:
-            x = F.pad(x, (0, pad_w, 0, pad_h))
-            y = F.pad(y, (0, pad_w, 0, pad_h))
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
+            y = F.pad(y, (0, pad_w, 0, pad_h), mode="reflect")
         return F.l1_loss(self._dwt(x), self._dwt(y))
 
 
@@ -54,7 +54,8 @@ class SSIMLoss(nn.Module):
         self.window_size = window_size
         self.size_average = size_average
         self.channels = channels
-        self.window = self.create_window(window_size, channels)
+        window = self.create_window(window_size, channels)
+        self.register_buffer("window", window)
 
     def gaussian(self, window_size, sigma):
         gauss = torch.Tensor([np.exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
@@ -67,12 +68,7 @@ class SSIMLoss(nn.Module):
         return window
 
     def forward(self, img1, img2):
-        if img1.size(1) != self.channels:
-            self.channels = img1.size(1)
-            self.window = self.create_window(self.window_size, self.channels).to(img1.device)
-        else:
-            self.window = self.window.to(img1.device)
-
+        # The window is automatically moved to the correct device by register_buffer
         mu1 = F.conv2d(img1, self.window, padding=self.window_size // 2, groups=self.channels)
         mu2 = F.conv2d(img2, self.window, padding=self.window_size // 2, groups=self.channels)
 
