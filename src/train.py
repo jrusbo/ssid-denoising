@@ -90,12 +90,14 @@ def evaluate_pipeline(model, dataloader, accelerator):
 
 def create_dataloaders(cfg, patch_size, batch_size):
     """Dynamically creates dataloaders for the progressive learning schedule."""
+    start_time = time.time()
     train_dataset = SIDDDatasetLMDB(
         lmdb_dir=cfg.lmdb_dir, patch_size=patch_size, split="train", seed=cfg.seed
     )
     val_dataset = SIDDDatasetLMDB(
         lmdb_dir=cfg.lmdb_dir, patch_size=patch_size, split="val", seed=cfg.seed
     )
+    dataset_time = time.time() - start_time
 
     train_loader = DataLoader(
         train_dataset,
@@ -115,12 +117,13 @@ def create_dataloaders(cfg, patch_size, batch_size):
         pin_memory=cfg.pin_memory,
         persistent_workers=(cfg.num_workers > 0),
     )
-
-    return train_loader, val_loader
+    
+    return train_loader, val_loader, dataset_time
 
 
 def run_training(cfg: Config):
     # 0. Set seed for initial reproducibility
+    init_start = time.time()
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
@@ -135,9 +138,10 @@ def run_training(cfg: Config):
 
     # 2. Print Configuration for Verification
     if accelerator.is_main_process:
+        accelerator.print(f"Accelerator initialized in {time.time() - init_start:.2f}s")
         accelerator.print("\n" + "="*50)
         accelerator.print("RECEIVED CONFIGURATION:")
-        # Convert all Path objects to absolute strings for verification logging
+        # ...
         cfg_dict = asdict(cfg)
         for k, v in cfg_dict.items():
             if isinstance(v, (str, Path)) and any(x in k for x in ["dir", "path"]):
@@ -164,6 +168,7 @@ def run_training(cfg: Config):
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
     if cfg.resume:
+        ckpt_load_start = time.time()
         ckpt_path = None
         if cfg.resume_path and Path(cfg.resume_path).exists():
             ckpt_path = Path(cfg.resume_path).resolve()
@@ -192,6 +197,7 @@ def run_training(cfg: Config):
                     checkpoint_data = torch.load(ckpt_path, map_location="cpu")
             
             if ckpt_path:
+                accelerator.print(f"Checkpoint loaded in {time.time() - ckpt_load_start:.2f}s")
                 # Load basic states
                 global_step = checkpoint_data["global_step"]
                 current_phase = checkpoint_data.get("current_phase", 0)
@@ -218,7 +224,11 @@ def run_training(cfg: Config):
     if wandb_run_id and accelerator.is_main_process:
         accelerator.print(f"Attempting to resume WandB run: {wandb_run_id}")
     
+    logger_init_start = time.time()
     logger = WandBValidationLogger(cfg, is_main_process=accelerator.is_main_process, run_id=wandb_run_id)
+    if accelerator.is_main_process:
+        accelerator.print(f"WandB initialized in {time.time() - logger_init_start:.2f}s")
+    
     # Update wandb_run_id in case it was newly generated
     wandb_run_id = logger.get_run_id()
 
@@ -233,12 +243,15 @@ def run_training(cfg: Config):
         wandb.config.update({"output_dir": str(cfg.output_dir)}, allow_val_change=True)
 
     # 3. Model, Loss, and Optimizer Setup
+    model_init_start = time.time()
     model = HASST(
         in_channels=cfg.in_channels,
         out_channels=cfg.out_channels,
         embed_dim=cfg.embed_dim,
         num_blocks=cfg.num_blocks,
     )
+    if accelerator.is_main_process:
+        accelerator.print(f"Model initialized in {time.time() - model_init_start:.2f}s")
 
     criterion = CompositeLoss(cfg).to(accelerator.device)
 
@@ -294,17 +307,23 @@ def run_training(cfg: Config):
     patch_size = cfg.patch_sizes[current_phase]
     batch_size = cfg.batch_sizes[current_phase]
 
-    train_loader, val_loader = create_dataloaders(cfg, patch_size, batch_size)
+    train_loader, val_loader, ds_time = create_dataloaders(cfg, patch_size, batch_size)
+    if accelerator.is_main_process:
+        accelerator.print(f"Datasets initialized in {ds_time:.2f}s")
     
     # 5. Prepare everything with Accelerate
     # NOTE: We prepare BEFORE loading state dicts to ensure the wrapped objects 
     # receive the states correctly.
+    prep_start = time.time()
     model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
         model, optimizer, train_loader, val_loader, scheduler
     )
+    if accelerator.is_main_process:
+        accelerator.print(f"Accelerator.prepare completed in {time.time() - prep_start:.2f}s")
 
     # Now load weights if resuming (Into PREPARED objects)
     if cfg.resume and checkpoint_data is not None:
+        restore_start = time.time()
         accelerator.print(f"Restoring weights and states from checkpoint (Step: {global_step})...")
         
         # Load model weights into the unwrapped model
@@ -327,12 +346,17 @@ def run_training(cfg: Config):
         # Verify LR restoration
         current_lr = scheduler.get_last_lr()[0]
         accelerator.print(f"Restored Learning Rate: {current_lr:.2e}")
+        if accelerator.is_main_process:
+            accelerator.print(f"Weights/states restored in {time.time() - restore_start:.2f}s")
 
     # 6. Apply torch.compile
     if cfg.use_compile and hasattr(torch, "compile"):
+        compile_start = time.time()
         accelerator.print("Compiling model with torch.compile...")
         try:
             model = torch.compile(model)
+            if accelerator.is_main_process:
+                accelerator.print(f"torch.compile call completed in {time.time() - compile_start:.2f}s (Note: Real compilation happens at first forward pass)")
         except Exception as e:
             accelerator.print(f"torch.compile failed: {e}. Falling back to standard execution.")
 
@@ -344,6 +368,7 @@ def run_training(cfg: Config):
         accelerator.print(f"Total model parameters: {num_params:,}")
         if getattr(wandb, "run", None) is not None:
             wandb.config.update({"model/parameters": num_params})
+        accelerator.print(f"Full initialization took {time.time() - init_start:.2f}s")
 
     progress_bar = tqdm(
         total=cfg.total_iters,
@@ -491,8 +516,9 @@ def run_training(cfg: Config):
                     progress_bar.set_description(f"Phase {current_phase} (Patch {patch_size})")
 
                     accelerator.free_memory()
-                    train_loader, val_loader = create_dataloaders(cfg, patch_size, batch_size)
+                    train_loader, val_loader, ds_time = create_dataloaders(cfg, patch_size, batch_size)
                     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
+                    accelerator.print(f"Phase {current_phase} datasets initialized in {ds_time:.2f}s")
                     break
 
                 if max_seconds and (time.time() - start_time > max_seconds):
