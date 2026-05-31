@@ -54,15 +54,16 @@ class SSIMLoss(nn.Module):
         self.window_size = window_size
         self.size_average = size_average
         self.channels = channels
-        window = self.create_window(window_size, channels)
+        self.sigma = sigma
+        window = self.create_window(window_size, sigma, channels)
         self.register_buffer("window", window)
 
     def gaussian(self, window_size, sigma):
         gauss = torch.Tensor([np.exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
         return gauss / gauss.sum()
 
-    def create_window(self, window_size, channel):
-        _1D_window = self.gaussian(window_size, 1.5).unsqueeze(1)
+    def create_window(self, window_size, sigma, channel):
+        _1D_window = self.gaussian(window_size, sigma).unsqueeze(1)
         _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
         window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
         return window
@@ -88,7 +89,7 @@ class SSIMLoss(nn.Module):
         if self.size_average:
             return 1 - ssim_map.mean()
         else:
-            return 1 - ssim_map.mean(1).mean(1).mean(1)
+            return 1 - ssim_map.mean(dim=(1, 2, 3))
 
 
 class CompositeLoss(nn.Module):
@@ -99,7 +100,7 @@ class CompositeLoss(nn.Module):
         self.config = config
         self.charbonnier = CharbonnierLoss()
         self.wavelet = WaveletLoss()
-        self.ssim = SSIMLoss()
+        self.ssim = SSIMLoss(channels=config.out_channels)
 
     def forward(self, pred, target):
         l_char = self.charbonnier(pred, target)

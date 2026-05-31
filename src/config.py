@@ -47,7 +47,7 @@ class Config:
     lr_initial: float = 2e-4
     lr_min: float = 1e-7
     beta1: float = 0.9
-    beta2: float = 0.999
+    beta2: float = 0.99999
     weight_decay: float = 0.0
 
     # --- Loss Weights ---
@@ -58,6 +58,7 @@ class Config:
     # --- DDP / DataLoader Settings ---
     num_workers: int = 4
     pin_memory: bool = True
+    prefetch_factor: int = 2
 
     def __post_init__(self):
         """Ensures that numeric types are correctly cast from YAML and paths are Path objects."""

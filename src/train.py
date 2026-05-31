@@ -108,6 +108,7 @@ def create_dataloaders(cfg, patch_size, batch_size):
         pin_memory=cfg.pin_memory,
         drop_last=True,
         persistent_workers=(cfg.num_workers > 0),
+        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
@@ -117,12 +118,13 @@ def create_dataloaders(cfg, patch_size, batch_size):
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
         persistent_workers=(cfg.num_workers > 0),
+        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
     
     return train_loader, val_loader, dataset_time
 
 
-def run_training(cfg: Config):
+def run_training(cfg: Config, start_time: float = None):
     # 0. Set seed for initial reproducibility
     init_start = time.time()
     random.seed(cfg.seed)
@@ -148,13 +150,14 @@ def run_training(cfg: Config):
             if isinstance(v, (str, Path)) and any(x in k for x in ["dir", "path"]):
                 try:
                     cfg_dict[k] = str(Path(v).resolve())
-                except:
+                except Exception:
                     pass
         accelerator.print(json.dumps(cfg_dict, indent=4))
         accelerator.print("="*50 + "\n")
 
     # Start timer for Kaggle limit
-    start_time = time.time()
+    if start_time is None:
+        start_time = time.time()
     max_seconds = cfg.max_hours * 3600 if cfg.max_hours and cfg.max_hours > 0 else None
 
     # --- Resuming Mechanism (Pre-Logger) ---
@@ -227,21 +230,29 @@ def run_training(cfg: Config):
     
     logger_init_start = time.time()
     logger = WandBValidationLogger(cfg, is_main_process=accelerator.is_main_process, run_id=wandb_run_id)
+    
+    # Update wandb_run_id and ensure it's synced across all processes
+    # We use broadcast_object_list to ensure all workers have the same Run ID and Name
+    run_info = [None, None]
     if accelerator.is_main_process:
         accelerator.print(f"WandB initialized in {time.time() - logger_init_start:.2f}s")
-    
-    # Update wandb_run_id in case it was newly generated
-    wandb_run_id = logger.get_run_id()
+        run_info[0] = logger.get_run_id()
+        run_info[1] = (wandb.run.name if getattr(wandb, "run", None) is not None else None) or run_info[0] or "train_run"
 
-    # Update cfg.output_dir to be run-specific (Using human-readable run name)
-    # On multi-GPU, only the main process has a wandb.run. Worker processes need a fallback.
-    run_name = (wandb.run.name if getattr(wandb, "run", None) is not None else None) or wandb_run_id or "train_run"
-    cfg.output_dir = base_output_dir / str(run_name)
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    from accelerate.utils import broadcast_object_list
+    broadcast_object_list(run_info)
+    wandb_run_id, run_name = run_info
     
-    # Update wandb config with the final run-specific output directory
-    if accelerator.is_main_process and getattr(wandb, "run", None) is not None:
-        wandb.config.update({"output_dir": str(cfg.output_dir)}, allow_val_change=True)
+    # Update cfg.output_dir to be run-specific (Using human-readable run name)
+    cfg.output_dir = base_output_dir / str(run_name)
+    
+    if accelerator.is_main_process:
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        # Update wandb config with the final run-specific output directory
+        if getattr(wandb, "run", None) is not None:
+            wandb.config.update({"output_dir": str(cfg.output_dir)}, allow_val_change=True)
+
+    accelerator.wait_for_everyone()
 
     # 3. Model, Loss, and Optimizer Setup
     model_init_start = time.time()
@@ -290,12 +301,14 @@ def run_training(cfg: Config):
             optim_groups,
             lr=cfg.lr_initial,
             betas=(cfg.beta1, cfg.beta2),
+            fused=True if torch.cuda.is_available() else False,
         )
     elif cfg.optimizer_type == "AdamW":
         optimizer = optim.AdamW(
             optim_groups,
             lr=cfg.lr_initial,
             betas=(cfg.beta1, cfg.beta2),
+            fused=True if torch.cuda.is_available() else False,
         )
     else:
         raise ValueError(f"Unsupported optimizer: {cfg.optimizer_type}")
@@ -340,9 +353,9 @@ def run_training(cfg: Config):
             random.setstate(rng_states["python"])
             np.random.set_state(rng_states["numpy"])
             torch.set_rng_state(rng_states["torch"])
-            if torch.cuda.is_available() and "torch_cuda" in rng_states:
+            if torch.cuda.is_available() and rng_states.get("torch_cuda") is not None:
                 torch.cuda.set_rng_state_all(rng_states["torch_cuda"])
-            accelerator.print(f"Exact RNG states restored.")
+            accelerator.print("Exact RNG states restored.")
         
         # Verify LR restoration
         current_lr = scheduler.get_last_lr()[0]
@@ -417,8 +430,17 @@ def run_training(cfg: Config):
     batch_start_time = time.time()
     try:
         while global_step < cfg.total_iters:
-            if max_seconds and (time.time() - start_time > max_seconds):
-                accelerator.print("\nTime limit reached.")
+            # Check for time limit reached (Synchronized across all processes)
+            should_stop = torch.tensor(0, device=accelerator.device)
+            if accelerator.is_main_process:
+                if max_seconds and (time.time() - start_time > max_seconds):
+                    should_stop += 1
+            
+            if accelerator.num_processes > 1:
+                should_stop = accelerator.reduce(should_stop, reduction="sum")
+            
+            if should_stop > 0:
+                accelerator.print("\nTime limit reached. Synchronized shutdown...")
                 break
 
             for noisy, gt in train_loader:
@@ -427,7 +449,7 @@ def run_training(cfg: Config):
                 
                 # Apply advanced augmentations on GPU
                 if random.random() < 0.5:
-                    noisy = adversarial_frequency_mixup(noisy, alpha=random.uniform(0.1, 0.4))
+                    noisy, gt = adversarial_frequency_mixup(noisy, gt, alpha=random.uniform(0.1, 0.4))
                 if random.random() < 0.5:
                     noisy, gt = apply_noise_cutmix(noisy, gt)
                 
@@ -464,7 +486,7 @@ def run_training(cfg: Config):
                         log_data[f"train/{k}"] = v.item() if isinstance(v, torch.Tensor) else v
                     
                     logger.log_metrics(global_step, log_data, commit=False)
-                    logger.log_gradients(global_step, model, commit=False)
+                    # Removed log_gradients from here to avoid pipeline stall
                     logger.log_system_metrics(global_step, img_per_sec, gpu_mem_gb, commit=False)
                     
                     batch_start_time = time.time()
@@ -476,6 +498,9 @@ def run_training(cfg: Config):
                     logger.log_metrics(
                         global_step, {"val/psnr": val_psnr, "val/ssim": val_ssim}, commit=False
                     )
+                    # Gradient logging moved here (already syncing for validation)
+                    logger.log_gradients(global_step, model, commit=False)
+
                     if val_sample is not None:
                         logger.log_visual_artifacts(global_step, *val_sample, prefix="visuals_val", commit=False)
 
@@ -516,17 +541,29 @@ def run_training(cfg: Config):
                     accelerator.print(f"\nScaling up! Phase {current_phase}: Patch {patch_size}x{patch_size}, Batch {batch_size}")
                     progress_bar.set_description(f"Phase {current_phase} (Patch {patch_size})")
 
+                    accelerator.wait_for_everyone()
                     accelerator.free_memory()
                     train_loader, val_loader, ds_time = create_dataloaders(cfg, patch_size, batch_size)
                     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
                     accelerator.print(f"Phase {current_phase} datasets initialized in {ds_time:.2f}s")
                     break
 
-                if max_seconds and (time.time() - start_time > max_seconds):
-                    break
+                # Check for time limit reached (Synchronized)
+                if global_step % cfg.log_freq == 0:
+                    should_stop = torch.tensor(0, device=accelerator.device)
+                    if accelerator.is_main_process:
+                        if max_seconds and (time.time() - start_time > max_seconds):
+                            should_stop += 1
+                    
+                    if accelerator.num_processes > 1:
+                        should_stop = accelerator.reduce(should_stop, reduction="sum")
+                    
+                    if should_stop > 0:
+                        break
     finally:
         # 8. Shutdown & Final Save
         progress_bar.close()
+        accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             accelerator.print("\nFinalizing training and uploading artifacts...")
             
@@ -573,11 +610,12 @@ def main():
 
     logger_cli.info(f"Starting multi-config run: {len(config_paths)} configs found.")
 
+    start_time = time.time()
     for path in config_paths:
         logger_cli.info(f"Processing config: {path}")
         try:
             cfg = Config.load_from_yaml(str(path))
-            run_training(cfg)
+            run_training(cfg, start_time=start_time)
         except Exception as e:
             logger_cli.error(f"Failed to process config {path}: {e}")
             continue

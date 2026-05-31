@@ -34,7 +34,7 @@ def compute_psnr(pred, gt):
 
 
 @torch.no_grad()
-def compute_ssim(pred, gt, window_size=11, size_average=True):
+def compute_ssim(pred, gt, window_size=11, sigma=1.5, size_average=True):
     """
     Computes SSIM on GPU.
     Reference: https://github.com/Po-Hsun-Su/pytorch-ssim
@@ -47,11 +47,11 @@ def compute_ssim(pred, gt, window_size=11, size_average=True):
     device = pred.device
     channel = pred.size(1)
     
-    # Cache key: (window_size, channel, device)
-    cache_key = (window_size, channel, str(device))
+    # Cache key: (window_size, channel, sigma, device)
+    cache_key = (window_size, channel, float(sigma), str(device))
     global _ssim_window_cache
     if cache_key not in _ssim_window_cache:
-        _ssim_window_cache[cache_key] = _create_window(window_size, channel).to(device)
+        _ssim_window_cache[cache_key] = _create_window(window_size, sigma, channel).to(device)
     
     window = _ssim_window_cache[cache_key]
 
@@ -84,8 +84,8 @@ def _gaussian(window_size, sigma):
     return gauss / gauss.sum()
 
 
-def _create_window(window_size, channel):
-    _1D_window = _gaussian(window_size, 1.5).unsqueeze(1)
+def _create_window(window_size, sigma, channel):
+    _1D_window = _gaussian(window_size, sigma).unsqueeze(1)
     _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
     window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
     return window
