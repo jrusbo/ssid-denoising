@@ -51,9 +51,9 @@ def evaluate_pipeline(model, dataloader, accelerator):
     Computes metrics locally and averages them across processes.
     """
     model.eval()
-    local_psnr = 0.0
-    local_ssim = 0.0
-    local_samples = 0
+    local_psnr = torch.tensor(0.0, device=accelerator.device)
+    local_ssim = torch.tensor(0.0, device=accelerator.device)
+    local_samples = torch.tensor(0.0, device=accelerator.device)
     val_sample = None
 
     pbar = tqdm(
@@ -61,8 +61,11 @@ def evaluate_pipeline(model, dataloader, accelerator):
         desc="Evaluating",
         disable=not accelerator.is_main_process,
         leave=False,
+        mininterval=2.0, # Reduce tqdm update frequency for better Colab performance
     )
-    with torch.no_grad():
+    
+    # Use autocast to match training speed and precision
+    with torch.no_grad(), accelerator.autocast():
         for i, (noisy, gt) in enumerate(pbar):
             pred = model(noisy)
             
@@ -71,17 +74,18 @@ def evaluate_pipeline(model, dataloader, accelerator):
                 val_sample = (noisy.detach(), pred.detach(), gt.detach())
 
             # Batch parsing metric accumulations (Calculated locally per GPU)
+            # compute_psnr and compute_ssim now return tensors to avoid GPU-CPU syncs
             local_psnr += compute_psnr(pred, gt)
             local_ssim += compute_ssim(pred, gt, size_average=False)
             local_samples += pred.shape[0]
 
-    # Convert to tensors for reduction
-    metrics = torch.tensor([local_psnr, local_ssim, float(local_samples)], device=accelerator.device)
+    # Sync and reduce across all processes (No-op on single GPU)
+    metrics = torch.stack([local_psnr, local_ssim, local_samples])
     
-    # Sum metrics across all processes
-    reduced_metrics = accelerator.reduce(metrics, reduction="sum")
+    if accelerator.num_processes > 1:
+        metrics = accelerator.reduce(metrics, reduction="sum")
     
-    global_psnr, global_ssim, total_samples = reduced_metrics.tolist()
+    global_psnr, global_ssim, total_samples = metrics.tolist()
 
     model.train()
     if total_samples == 0:
@@ -111,14 +115,16 @@ def create_dataloaders(cfg, patch_size, batch_size):
         prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
 
+    # Validation loader: We use a small number of workers (1 or 2) but disable persistent_workers.
+    # This prevents worker-shutdown deadlocks on Colab while keeping data loading fast.
+    val_workers = min(2, cfg.num_workers)
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,
         shuffle=False,
-        num_workers=cfg.num_workers,
+        num_workers=val_workers,
         pin_memory=cfg.pin_memory,
-        persistent_workers=(cfg.num_workers > 0),
-        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
+        persistent_workers=False,
     )
     
     return train_loader, val_loader, dataset_time

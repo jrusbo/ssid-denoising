@@ -25,12 +25,12 @@ def compute_psnr(pred, gt):
         # Batched input (B, C, H, W)
         mse = mse.view(mse.size(0), -1).mean(dim=1)
         psnr = 10 * torch.log10(1.0 / (mse + 1e-10))
-        return psnr.sum().item()
+        return psnr.sum() # Return tensor
     else:
         # Single image (C, H, W) or (H, W)
         mse = mse.mean()
         psnr = 10 * torch.log10(1.0 / (mse + 1e-10))
-        return psnr.item()
+        return psnr # Return tensor
 
 
 @torch.no_grad()
@@ -72,11 +72,11 @@ def compute_ssim(pred, gt, window_size=11, sigma=1.5, size_average=True):
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
 
     if size_average:
-        return ssim_map.mean().item()
+        return ssim_map.mean() # Return tensor
     else:
         # Average spatially and across channels, but keep batch dimension if needed
         # (Though current evaluate_pipeline expects a single scalar sum/average)
-        return ssim_map.mean(dim=(1, 2, 3)).sum().item()
+        return ssim_map.mean(dim=(1, 2, 3)).sum() # Return tensor
 
 
 def _gaussian(window_size, sigma):

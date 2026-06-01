@@ -62,7 +62,7 @@ class HASSTInferenceEngine:
         x = x.to(self.device)
         tta_result = 0.0
 
-        for mode in tqdm(range(8), desc="TTA forward pass", leave=False):
+        for mode in range(8):
             transformed_input = self._apply_tta(x, mode)
             pred = self.model(transformed_input)
             inverted_pred = self._invert_tta(pred, mode)

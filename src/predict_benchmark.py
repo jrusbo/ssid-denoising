@@ -63,15 +63,18 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
     # 4. Process Blocks
     denoised_blocks = np.zeros_like(noisy_blocks, dtype=np.uint8)
 
-    for s in range(num_scenes):
-        print(f"Processing Scene {s+1}/{num_scenes}...")
-        for b in tqdm(range(num_blocks), desc=f"Scene {s+1}", leave=False):
+    scene_pbar = tqdm(range(num_scenes), desc="Total Progress", mininterval=5.0)
+    for s in scene_pbar:
+        scene_pbar.set_description(f"Scene {s+1}/{num_scenes}")
+        for b in tqdm(range(num_blocks), desc=f"Scene {s+1}", leave=False, mininterval=1.0):
             # Preprocess: (H, W, C) [0, 255] -> (1, C, H, W) [0, 1]
             block = noisy_blocks[s, b].astype(np.float32) / 255.0
             block_tensor = torch.from_numpy(block).permute(2, 0, 1).unsqueeze(0).to(device)
 
-            # Inference
-            with torch.no_grad():
+            # Inference with mixed precision for maximum A100 throughput
+            # We use bfloat16 on A100 as it's faster and more stable than fp16
+            dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float16
+            with torch.no_grad(), torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type == "cuda"):
                 if use_tta:
                     # 8x Geometric Self-Ensemble with TLC wrapper
                     pred_tensor = engine.forward_tlc(block_tensor, patch_size=256)
