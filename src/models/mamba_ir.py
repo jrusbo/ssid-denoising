@@ -64,8 +64,8 @@ class AttentiveStateSpaceBlock(nn.Module):
         self.ffn = MambaFFN(c)
 
         # Stabilization parameters
-        self.mamba_beta = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
-        self.ffn_gamma = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
+        self.mamba_beta = nn.Parameter(torch.ones(c) * 1e-2, requires_grad=True)
+        self.ffn_gamma = nn.Parameter(torch.ones(c) * 1e-2, requires_grad=True)
 
         # Conditional Modulation from LoNPE (2 channels: shot, read)
         self.cond_proj = nn.Sequential(
@@ -73,7 +73,6 @@ class AttentiveStateSpaceBlock(nn.Module):
             nn.Sigmoid()
         )
 
-    @torch._dynamo.disable
     def forward(self, x, noise_prior=None):
         B, C, H, W = x.shape
 
@@ -117,11 +116,11 @@ class AttentiveStateSpaceBlock(nn.Module):
             x_m = torch.zeros_like(x_in)
 
         # Combine with residual and stabilization scales
-        x = x + x_m * self.mamba_beta
+        x = x + x_m * self.mamba_beta.view(1, -1, 1, 1)
 
         # Feed-forward Branch
         res = x
         x_f_seq = rearrange(x, "b c h w -> b (h w) c")
         x_f = self.ffn(self.norm2(x_f_seq))
         x_f = rearrange(x_f, "b (h w) c -> b c h w", h=H, w=W)
-        return res + x_f * self.ffn_gamma
+        return res + x_f * self.ffn_gamma.view(1, -1, 1, 1)

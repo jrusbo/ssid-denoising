@@ -9,15 +9,15 @@ class LayerNorm2d(nn.Module):
     """
     def __init__(self, channels, eps=1e-6):
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(1, channels, 1, 1))
-        self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.weight = nn.Parameter(torch.ones(channels))
+        self.bias = nn.Parameter(torch.zeros(channels))
         self.eps = eps
 
     def forward(self, x):
         mean = x.mean(1, keepdim=True)
         var = x.var(1, keepdim=True, unbiased=False)
         x = (x - mean) / torch.sqrt(var + self.eps)
-        return x * self.weight + self.bias
+        return x * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
 
 
 class SimpleGate(nn.Module):
@@ -67,8 +67,8 @@ class NAFBlock(nn.Module):
         self.norm1 = LayerNorm2d(c)
         self.norm2 = LayerNorm2d(c)
 
-        self.beta = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
-        self.gamma = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
+        self.beta = nn.Parameter(torch.ones(c) * 1e-2, requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones(c) * 1e-2, requires_grad=True)
 
         # Conditional Modulation from LoNPE (2 channels: shot, read)
         self.cond_proj = nn.Sequential(
@@ -90,11 +90,11 @@ class NAFBlock(nn.Module):
         x = self.sg(x)
         x = x * self.sca(x)
         x = self.conv3(x)
-        y = inp + x * self.beta
+        y = inp + x * self.beta.view(1, -1, 1, 1)
 
         # 2. Feed-forward / Channel Branch
         x = self.norm2(y)
         x = self.conv4(x)
         x = self.sg(x)
         x = self.conv5(x)
-        return y + x * self.gamma
+        return y + x * self.gamma.view(1, -1, 1, 1)
