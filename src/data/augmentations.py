@@ -24,6 +24,7 @@ def apply_noise_cutmix(noisy_batch, gt_batch, alpha=0.2):
     global _ncm_noise_buffer, _ncm_gt_buffer
     B, C, H, W = noisy_batch.shape
     
+    should_refresh_buffer = False
     if B > 1:
         # Mix within the batch
         noisy_b = torch.roll(noisy_batch, shifts=1, dims=0)
@@ -37,9 +38,7 @@ def apply_noise_cutmix(noisy_batch, gt_batch, alpha=0.2):
         
         noisy_b = _ncm_noise_buffer
         gt_b = _ncm_gt_buffer
-        # Update buffer for next iteration
-        _ncm_noise_buffer = noisy_batch.detach().clone()
-        _ncm_gt_buffer = gt_batch.detach().clone()
+        should_refresh_buffer = True
 
     lam = np.random.beta(alpha, alpha)
 
@@ -64,6 +63,10 @@ def apply_noise_cutmix(noisy_batch, gt_batch, alpha=0.2):
     # Apply mixed noise to the baseline (gt_batch)
     mixed_noisy = gt_batch + mixed_noise
 
+    if should_refresh_buffer:
+        _ncm_noise_buffer.copy_(noisy_batch.detach())
+        _ncm_gt_buffer.copy_(gt_batch.detach())
+
     return mixed_noisy, gt_batch
 
 
@@ -75,6 +78,7 @@ def adversarial_frequency_mixup(noisy_batch, gt_batch, alpha=0.5):
     global _afm_noisy_buffer, _afm_gt_buffer
     B = noisy_batch.shape[0]
     
+    should_refresh_buffer = False
     if B > 1:
         noisy_b2 = torch.roll(noisy_batch, shifts=1, dims=0)
         gt_b2 = torch.roll(gt_batch, shifts=1, dims=0)
@@ -86,8 +90,7 @@ def adversarial_frequency_mixup(noisy_batch, gt_batch, alpha=0.5):
         
         noisy_b2 = _afm_noisy_buffer
         gt_b2 = _afm_gt_buffer
-        _afm_noisy_buffer = noisy_batch.detach().clone()
-        _afm_gt_buffer = gt_batch.detach().clone()
+        should_refresh_buffer = True
 
     def _mix_freq(img1, img2):
         fft_1 = torch.fft.rfft2(img1, dim=(-2, -1), norm="ortho")
@@ -103,5 +106,9 @@ def adversarial_frequency_mixup(noisy_batch, gt_batch, alpha=0.5):
 
     mixed_noisy = torch.clamp(_mix_freq(noisy_batch, noisy_b2), 0.0, 1.0)
     mixed_gt = torch.clamp(_mix_freq(gt_batch, gt_b2), 0.0, 1.0)
+
+    if should_refresh_buffer:
+        _afm_noisy_buffer.copy_(noisy_batch.detach())
+        _afm_gt_buffer.copy_(gt_batch.detach())
 
     return mixed_noisy, mixed_gt

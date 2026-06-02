@@ -87,12 +87,12 @@ def evaluate_pipeline(model, dataloader, accelerator):
     )
     
     # Use autocast to match training speed and precision
-    with torch.no_grad(), accelerator.autocast():
+    with accelerator.autocast():
         for i, (noisy, gt) in enumerate(pbar):
             pred = model(noisy)
             
             # Save one sample for visualization (from the main process)
-            if i == 0:
+            if i == 0 and accelerator.is_main_process:
                 noise_prior = None
                 if hasattr(raw_model, "estimate_noise_prior"):
                     noise_prior = raw_model.estimate_noise_prior(noisy).detach()
@@ -473,6 +473,28 @@ def run_training(cfg: Config, start_time: float = None):
         desc=f"Phase {current_phase} (Patch {patch_size})"
     )
 
+    def _to_host_scalars(loss_tensor, loss_components):
+        """Batch scalar extraction to reduce GPU->CPU sync points in logging."""
+        tensor_keys = []
+        tensor_vals = [loss_tensor.detach()]
+
+        for k, v in loss_components.items():
+            if isinstance(v, torch.Tensor):
+                tensor_keys.append(k)
+                tensor_vals.append(v.detach())
+
+        host_vals = torch.stack([t.float() for t in tensor_vals]).cpu().tolist()
+        metrics = {"train/loss": host_vals[0]}
+
+        for i, key in enumerate(tensor_keys, start=1):
+            metrics[f"train/{key}"] = host_vals[i]
+
+        for k, v in loss_components.items():
+            if not isinstance(v, torch.Tensor):
+                metrics[f"train/{k}"] = float(v)
+
+        return metrics
+
     def get_checkpoint_state():
         unwrapped_model = get_raw_model(model, accelerator)
         state = {
@@ -565,13 +587,9 @@ def run_training(cfg: Config, start_time: float = None):
                     img_per_sec = (cfg.batch_sizes[current_phase] * accelerator.num_processes * cfg.log_freq) / elapsed if elapsed > 0 else 0
                     gpu_mem_gb = torch.cuda.max_memory_reserved() / (1024**3) if torch.cuda.is_available() else 0
 
-                    log_data = {
-                        "train/loss": loss.item(),
-                        "train/learning_rate": scheduler.get_last_lr()[0],
-                        "train/patch_size": patch_size,
-                    }
-                    for k, v in loss_dict.items():
-                        log_data[f"train/{k}"] = v.item() if isinstance(v, torch.Tensor) else v
+                    log_data = _to_host_scalars(loss, loss_dict)
+                    log_data["train/learning_rate"] = scheduler.get_last_lr()[0]
+                    log_data["train/patch_size"] = patch_size
                     
                     logger.log_metrics(global_step, log_data, commit=False)
                     # Removed log_gradients from here to avoid pipeline stall

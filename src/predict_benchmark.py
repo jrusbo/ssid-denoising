@@ -83,7 +83,8 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
                     pred_tensor = model(block_tensor)
 
             # Postprocess: (1, C, H, W) [0, 1] -> (H, W, C) [0, 255]
-            pred_np = pred_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+            # NumPy does not always support bfloat16 tensors from autocast inference.
+            pred_np = pred_tensor.squeeze(0).permute(1, 2, 0).float().cpu().numpy()
             denoised_blocks[s, b] = (pred_np * 255.0).round().astype(np.uint8)
 
     # 5. Save Results

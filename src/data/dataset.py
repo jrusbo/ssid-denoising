@@ -137,8 +137,9 @@ class SIDDDatasetLMDB(Dataset):
         if self.split == "train":
             gt_crop, noisy_crop = self._augment(gt_crop, noisy_crop)
 
-        gt_tensor = torch.from_numpy(gt_crop).float().permute(2, 0, 1) / 255.0
-        noisy_tensor = torch.from_numpy(noisy_crop).float().permute(2, 0, 1) / 255.0
+        inv_255 = 1.0 / 255.0
+        gt_tensor = torch.from_numpy(gt_crop).permute(2, 0, 1).to(dtype=torch.float32).mul_(inv_255)
+        noisy_tensor = torch.from_numpy(noisy_crop).permute(2, 0, 1).to(dtype=torch.float32).mul_(inv_255)
 
         return noisy_tensor, gt_tensor
 

@@ -45,19 +45,20 @@ class WandBValidationLogger:
         
         names = []
         norms = []
-        
-        for name, p in model.named_parameters():
-            if p.grad is not None:
-                # Store the tensor norm (still on GPU)
-                names.append(name)
-                norms.append(p.grad.norm(2))
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if p.grad is not None:
+                    # Store the tensor norm (still on GPU)
+                    names.append(name)
+                    norms.append(p.grad.norm(2))
 
         if not norms:
             return
 
         # One single sync point: move all norms to CPU at once
-        norms_cpu = torch.stack(norms).cpu().numpy()
-        
+        # NumPy conversion can fail on bfloat16; normalize to float32 first.
+        norms_cpu = torch.stack(norms).float().cpu().numpy()
+
         metrics = {}
         total_grad_norm_sq = 0.0
         
@@ -87,14 +88,17 @@ class WandBValidationLogger:
             # Handle both (B, C, H, W) and (C, H, W)
             if t.dim() == 4:
                 t = t[0]
-            return (t.detach().cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+            # NumPy cannot ingest bfloat16 directly on some PyTorch builds.
+            t = t.detach().float().cpu().clamp(0.0, 1.0)
+            return (t.numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
 
         def to_heatmap(t):
             if t.dim() == 4:
                 t = t[0]
             if t.dim() == 3:
                 t = t[0]
-            arr = t.detach().cpu().numpy()
+            # Ensure CPU float32 before converting to NumPy for OpenCV.
+            arr = t.detach().float().cpu().numpy()
             arr = arr - arr.min()
             denom = max(arr.max(), 1e-8)
             arr = (arr / denom * 255.0).astype(np.uint8)
