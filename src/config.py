@@ -64,7 +64,9 @@ class Config:
     # --- DDP / DataLoader Settings ---
     num_workers: int = 4
     pin_memory: bool = True
-    prefetch_factor: int = 2
+    prefetch_factor: int = 4
+    train_loader_in_order: bool = False
+    worker_cpu_threads: int = 1
 
     # --- Performance Optimizations ---
     channels_last: bool = True

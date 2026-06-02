@@ -64,7 +64,9 @@ ssim_weight: 0.00             # Weight for the SSIM loss.
 # --- Hardware / DataLoader Settings ---
 num_workers: 8                # Number of CPU subprocesses for data loading per GPU.
 pin_memory: true              # Whether to use pinned memory for faster CPU-to-GPU data transfer.
-prefetch_factor: 2            # Number of batches to prefetch per worker to hide IO latency.
+prefetch_factor: 4            # Number of batches to prefetch per worker to hide IO latency.
+train_loader_in_order: false  # Allow out-of-order batches to avoid head-of-line blocking from one slow worker.
+worker_cpu_threads: 1         # Limit intra-op CPU threads inside each worker to avoid oversubscription spikes.
 
 # --- Runtime Optimizations ---
 channels_last: true           # Faster memory layout on NVIDIA GPUs for conv-heavy workloads.

@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import logging
 import random
@@ -27,6 +28,26 @@ from utils.metrics import compute_psnr, compute_ssim
 # Setup logging for multi-config runs
 logging.basicConfig(level=logging.INFO)
 logger_cli = logging.getLogger(__name__)
+
+
+def make_worker_init_fn(base_seed: int, worker_cpu_threads: int):
+    """Create deterministic per-worker setup without CPU thread oversubscription."""
+
+    def _worker_init_fn(worker_id: int):
+        worker_seed = base_seed + worker_id
+        random.seed(worker_seed)
+        np.random.seed(worker_seed % (2**32 - 1))
+        torch.manual_seed(worker_seed)
+
+        if worker_cpu_threads and worker_cpu_threads > 0:
+            torch.set_num_threads(worker_cpu_threads)
+            try:
+                torch.set_num_interop_threads(1)
+            except RuntimeError:
+                # set_num_interop_threads may be immutable depending on worker startup path.
+                pass
+
+    return _worker_init_fn
 
 
 def get_raw_model(model, accelerator):
@@ -107,6 +128,7 @@ def create_dataloaders(cfg, patch_size, batch_size):
         lmdb_dir=cfg.lmdb_dir, patch_size=patch_size, split="val", seed=cfg.seed
     )
     dataset_time = time.time() - start_time
+    dataloader_signature = inspect.signature(DataLoader).parameters
 
     train_loader_kwargs = dict(
         dataset=train_dataset,
@@ -119,6 +141,22 @@ def create_dataloaders(cfg, patch_size, batch_size):
     )
     if cfg.num_workers > 0:
         train_loader_kwargs["prefetch_factor"] = cfg.prefetch_factor
+        train_loader_kwargs["worker_init_fn"] = make_worker_init_fn(
+            cfg.seed,
+            cfg.worker_cpu_threads,
+        )
+
+    if "in_order" in dataloader_signature:
+        # Disable strict batch ordering to avoid head-of-line blocking from a slow worker.
+        train_loader_kwargs["in_order"] = cfg.train_loader_in_order
+
+    if (
+        "pin_memory_device" in dataloader_signature
+        and cfg.pin_memory
+        and torch.cuda.is_available()
+    ):
+        train_loader_kwargs["pin_memory_device"] = f"cuda:{torch.cuda.current_device()}"
+
     train_loader = DataLoader(**train_loader_kwargs)
 
     # Validation loader: We use a small number of workers (1 or 2) but disable persistent_workers.
