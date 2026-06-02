@@ -1,12 +1,10 @@
 import random
 
-import cv2
 import lmdb
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-cv2.setNumThreads(0)
 
 
 class SIDDDatasetLMDB(Dataset):
@@ -133,8 +131,8 @@ class SIDDDatasetLMDB(Dataset):
             noisy_crop = get_padded_crop(noisy_img, rnd_h, rnd_w, self.patch_size)
 
         # Convert the SMALL CROP from BGR (OpenCV default during creation) to RGB
-        gt_crop = cv2.cvtColor(gt_crop, cv2.COLOR_BGR2RGB)
-        noisy_crop = cv2.cvtColor(noisy_crop, cv2.COLOR_BGR2RGB)
+        gt_crop = np.ascontiguousarray(gt_crop[:, :, ::-1])
+        noisy_crop = np.ascontiguousarray(noisy_crop[:, :, ::-1])
 
         if self.split == "train":
             gt_crop, noisy_crop = self._augment(gt_crop, noisy_crop)
