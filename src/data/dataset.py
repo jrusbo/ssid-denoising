@@ -91,12 +91,7 @@ class SIDDDatasetLMDB(Dataset):
             # Parse shape from stored metadata "H,W,C"
             H, W, C = map(int, bytes(shape_buf).decode("ascii").split(","))
 
-            # Reconstruct images from raw bytes (Direct view to avoid copy)
-            gt_img = np.frombuffer(gt_buf, dtype=np.uint8).reshape(H, W, C)
-            noisy_img = np.frombuffer(noisy_buf, dtype=np.uint8).reshape(H, W, C)
-
             # Determine crop coordinates first
-            # Handle padding internally if image is smaller than patch_size
             effective_H, effective_W = max(H, self.patch_size), max(W, self.patch_size)
 
             if self.split == "train":
@@ -106,20 +101,25 @@ class SIDDDatasetLMDB(Dataset):
                 rnd_h = (effective_H - self.patch_size) // 2
                 rnd_w = (effective_W - self.patch_size) // 2
 
-            # Extract crop from the BGR image
-            # We must handle the case where the random crop falls into the padded area
-            # We can use np.pad on the crop ONLY if it exceeds bounds, or just pad the whole thing if it's small.
-            # But since SIDD images are usually > 256x256, padding is rare.
-            
-            def get_padded_crop(img, h_start, w_start, p_size):
-                curr_h, curr_w, _ = img.shape
-                # Calculate how much of the patch is within the image bounds
+            # Fast memoryview crop to avoid doing highly scattered 2D reads from a 36MB mmap file.
+            # Doing 2D slices natively across 8 Python workers on Windows will lock the OS memory manager and thrash page faults.
+            # Instead, we pull one contiguous 1D block containing the required rows sequentially, then slice the width in RAM.
+            def get_fast_padded_crop(buf, h_start, w_start, p_size, curr_h, curr_w):
                 h_end = min(h_start + p_size, curr_h)
                 w_end = min(w_start + p_size, curr_w)
                 
-                # Extract the valid part of the crop
-                crop = img[h_start:h_end, w_start:w_end, :].copy()
-                
+                # 1D linear slice from LMDB memory view
+                start_idx = h_start * curr_w * C
+                end_idx = h_end * curr_w * C
+
+                # Sequentially copy the row block into RAM (approx ~1-2 MB instead of 36MB), breaking the mmap pointer.
+                mv = memoryview(buf)
+                row_block = np.frombuffer(mv[start_idx:end_idx], dtype=np.uint8).copy()
+                row_block = row_block.reshape(h_end - h_start, curr_w, C)
+
+                # Extract width crop locally
+                crop = row_block[:, w_start:w_end, :].copy()
+
                 # Pad if the crop is smaller than p_size
                 pad_h = p_size - crop.shape[0]
                 pad_w = p_size - crop.shape[1]
@@ -127,8 +127,8 @@ class SIDDDatasetLMDB(Dataset):
                     crop = np.pad(crop, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
                 return crop
 
-            gt_crop = get_padded_crop(gt_img, rnd_h, rnd_w, self.patch_size)
-            noisy_crop = get_padded_crop(noisy_img, rnd_h, rnd_w, self.patch_size)
+            gt_crop = get_fast_padded_crop(gt_buf, rnd_h, rnd_w, self.patch_size, H, W)
+            noisy_crop = get_fast_padded_crop(noisy_buf, rnd_h, rnd_w, self.patch_size, H, W)
 
         # Convert the SMALL CROP from BGR (OpenCV default during creation) to RGB
         gt_crop = np.ascontiguousarray(gt_crop[:, :, ::-1])
