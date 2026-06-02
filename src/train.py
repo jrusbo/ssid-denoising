@@ -55,6 +55,7 @@ def evaluate_pipeline(model, dataloader, accelerator):
     local_ssim = torch.tensor(0.0, device=accelerator.device)
     local_samples = torch.tensor(0.0, device=accelerator.device)
     val_sample = None
+    raw_model = get_raw_model(model, accelerator)
 
     pbar = tqdm(
         dataloader,
@@ -71,7 +72,10 @@ def evaluate_pipeline(model, dataloader, accelerator):
             
             # Save one sample for visualization (from the main process)
             if i == 0:
-                val_sample = (noisy.detach(), pred.detach(), gt.detach())
+                noise_prior = None
+                if hasattr(raw_model, "estimate_noise_prior"):
+                    noise_prior = raw_model.estimate_noise_prior(noisy).detach()
+                val_sample = (noisy.detach(), pred.detach(), gt.detach(), noise_prior)
 
             # Batch parsing metric accumulations (Calculated locally per GPU)
             # compute_psnr and compute_ssim now return tensors to avoid GPU-CPU syncs
@@ -81,7 +85,7 @@ def evaluate_pipeline(model, dataloader, accelerator):
 
     # Sync and reduce across all processes (No-op on single GPU)
     metrics = torch.stack([local_psnr, local_ssim, local_samples])
-    
+
     if accelerator.num_processes > 1:
         metrics = accelerator.reduce(metrics, reduction="sum")
     
@@ -104,22 +108,24 @@ def create_dataloaders(cfg, patch_size, batch_size):
     )
     dataset_time = time.time() - start_time
 
-    train_loader = DataLoader(
-        train_dataset,
+    train_loader_kwargs = dict(
+        dataset=train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
         drop_last=True,
         persistent_workers=(cfg.num_workers > 0),
-        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
+    if cfg.num_workers > 0:
+        train_loader_kwargs["prefetch_factor"] = cfg.prefetch_factor
+    train_loader = DataLoader(**train_loader_kwargs)
 
     # Validation loader: We use a small number of workers (1 or 2) but disable persistent_workers.
     # This prevents worker-shutdown deadlocks on Colab while keeping data loading fast.
     val_workers = min(2, cfg.num_workers)
     val_loader = DataLoader(
-        val_dataset,
+        dataset=val_dataset,
         batch_size=1,
         shuffle=False,
         num_workers=val_workers,
@@ -143,7 +149,16 @@ def run_training(cfg: Config, start_time: float = None):
     reset_augmentation_buffers()
 
     # 1. Initialize HuggingFace Accelerator
-    accelerator = Accelerator(mixed_precision=cfg.mixed_precision)
+    accelerator = Accelerator(
+        mixed_precision=cfg.mixed_precision,
+        gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+    )
+
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = cfg.cudnn_benchmark
 
     # 2. Print Configuration for Verification
     if accelerator.is_main_process:
@@ -267,9 +282,28 @@ def run_training(cfg: Config, start_time: float = None):
         out_channels=cfg.out_channels,
         embed_dim=cfg.embed_dim,
         num_blocks=cfg.num_blocks,
+        lonpe_scale_physical=cfg.lonpe_scale_physical,
+        lonpe_shot_range=tuple(cfg.lonpe_shot_range),
+        lonpe_read_range=tuple(cfg.lonpe_read_range),
     )
+
+    if torch.cuda.is_available() and cfg.channels_last:
+        model = model.to(memory_format=torch.channels_last)
     if accelerator.is_main_process:
         accelerator.print(f"Model initialized in {time.time() - model_init_start:.2f}s")
+
+    # -- Dependency sanity check for the Mamba attentive state-space implementation
+    try:
+        import importlib.util
+        _mamba_spec = importlib.util.find_spec("mamba_ssm")
+        mamba_available = _mamba_spec is not None
+    except Exception:
+        mamba_available = False
+
+    if not mamba_available:
+        accelerator.print("Warning: 'mamba_ssm' package not found. The AttentiveStateSpaceBlock will fallback to a zeroed global branch. To match the HASST report, install 'mamba-ssm' and 'causal-conv1d'.")
+        if cfg.require_mamba:
+            raise RuntimeError("Configuration requires 'mamba-ssm' but it is not installed. Install mamba-ssm and causal-conv1d or set Config.require_mamba=False.")
 
     criterion = CompositeLoss(cfg).to(accelerator.device)
 
@@ -302,22 +336,12 @@ def run_training(cfg: Config, start_time: float = None):
         {"params": no_decay, "weight_decay": 0.0},
     ]
 
-    if cfg.optimizer_type == "Adam":
-        optimizer = optim.Adam(
-            optim_groups,
-            lr=cfg.lr_initial,
-            betas=(cfg.beta1, cfg.beta2),
-            fused=True if torch.cuda.is_available() else False,
-        )
-    elif cfg.optimizer_type == "AdamW":
-        optimizer = optim.AdamW(
-            optim_groups,
-            lr=cfg.lr_initial,
-            betas=(cfg.beta1, cfg.beta2),
-            fused=True if torch.cuda.is_available() else False,
-        )
-    else:
-        raise ValueError(f"Unsupported optimizer: {cfg.optimizer_type}")
+    optimizer = optim.AdamW(
+        optim_groups,
+        lr=cfg.lr_initial,
+        betas=(cfg.beta1, cfg.beta2),
+        fused=True if torch.cuda.is_available() else False,
+    )
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=cfg.total_iters, eta_min=cfg.lr_min
@@ -340,6 +364,20 @@ def run_training(cfg: Config, start_time: float = None):
     )
     if accelerator.is_main_process:
         accelerator.print(f"Accelerator.prepare completed in {time.time() - prep_start:.2f}s")
+
+    # If requested, enable wandb.watch on the unwrapped model to collect histograms.
+    try:
+        unwrapped_model = get_raw_model(model, accelerator)
+        if accelerator.is_main_process and cfg.wandb_watch and getattr(wandb, "run", None) is not None:
+            try:
+                wandb.watch(unwrapped_model, log="all", log_freq=cfg.wandb_watch_log_freq)
+                accelerator.print(f"wandb.watch enabled (log_freq={cfg.wandb_watch_log_freq}).")
+            except Exception as e:
+                accelerator.print(f"wandb.watch failed: {e}. Continuing without detailed watch.")
+    except Exception:
+        # If anything goes wrong with unwrapping or wandb, continue but log a message.
+        if accelerator.is_main_process:
+            accelerator.print("Warning: Could not enable wandb.watch for the model (unwrap/watch failure).")
 
     # Now load weights if resuming (Into PREPARED objects)
     if cfg.resume and checkpoint_data is not None:
@@ -434,6 +472,7 @@ def run_training(cfg: Config, start_time: float = None):
             torch.save(checkpoint_state, last_path)
 
     batch_start_time = time.time()
+    optimizer.zero_grad(set_to_none=True)
     try:
         while global_step < cfg.total_iters:
             # Check for time limit reached (Synchronized across all processes)
@@ -453,27 +492,32 @@ def run_training(cfg: Config, start_time: float = None):
                 if global_step >= cfg.total_iters:
                     break
                 
-                # Apply advanced augmentations on GPU
-                if random.random() < 0.5:
-                    noisy, gt = adversarial_frequency_mixup(noisy, gt, alpha=random.uniform(0.1, 0.4))
-                if random.random() < 0.5:
-                    noisy, gt = apply_noise_cutmix(noisy, gt)
-                
-                # Ensure augmented inputs are clamped to [0, 1] range
-                noisy = torch.clamp(noisy, 0.0, 1.0)
+                with accelerator.accumulate(model):
+                    # Apply advanced augmentations on GPU
+                    if random.random() < 0.5:
+                        noisy, gt = adversarial_frequency_mixup(noisy, gt, alpha=random.uniform(0.1, 0.4))
+                    if random.random() < 0.5:
+                        noisy, gt = apply_noise_cutmix(noisy, gt)
 
-                with accelerator.autocast():
-                    pred = model(noisy)
-                    loss, loss_dict = criterion(pred, gt)
+                    # Ensure augmented inputs are clamped to [0, 1] range
+                    noisy = torch.clamp(noisy, 0.0, 1.0)
 
-                optimizer.zero_grad()
-                accelerator.backward(loss)
+                    if torch.cuda.is_available() and cfg.channels_last:
+                        noisy = noisy.contiguous(memory_format=torch.channels_last)
+                        gt = gt.contiguous(memory_format=torch.channels_last)
 
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    with accelerator.autocast():
+                        pred = model(noisy)
+                        loss, loss_dict = criterion(pred, gt)
 
-                optimizer.step()
-                scheduler.step()
+                    accelerator.backward(loss)
+
+                    if accelerator.sync_gradients:
+                        accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
 
                 # Logging Logic
                 logged_this_step = False
@@ -502,7 +546,9 @@ def run_training(cfg: Config, start_time: float = None):
                 if global_step > 0 and global_step % cfg.val_freq == 0:
                     val_psnr, val_ssim, val_sample = evaluate_pipeline(model, val_loader, accelerator)
                     logger.log_metrics(
-                        global_step, {"val/psnr": val_psnr, "val/ssim": val_ssim}, commit=False
+                        global_step,
+                        {"val/psnr": val_psnr, "val/ssim": val_ssim},
+                        commit=False,
                     )
                     # Gradient logging moved here (already syncing for validation)
                     logger.log_gradients(global_step, model, commit=False)

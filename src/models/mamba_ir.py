@@ -57,7 +57,17 @@ class AttentiveStateSpaceBlock(nn.Module):
         # Mamba acts as the non-causal token mixer
         MambaClass = get_mamba_class()
         if MambaClass:
-            self.mamba = MambaClass(d_model=c, d_state=d_state, d_conv=d_conv, expand=expand)
+            self.mamba = MambaClass(
+                d_model=c,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand,
+                dt_init="random",
+                dt_min=0.001,
+                dt_max=0.1,
+                dt_scale=1.0,
+                dt_init_floor=1e-4
+            )
         else:
             self.mamba = None
 

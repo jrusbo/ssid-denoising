@@ -15,17 +15,19 @@ class Config:
     mixed_precision: str = "fp16"  # "no", "fp16", "bf16"
 
     # --- Paths ---
-    data_dir: Union[str, Path] = "/kaggle/input/sidd-benchmark-srgb-psnr/Data"
     lmdb_dir: Union[str, Path] = "/kaggle/working/sidd_lmdb"
     output_dir: Union[str, Path] = "/kaggle/working/checkpoints"
     resume: bool = False
     resume_path: Optional[Union[str, Path]] = None
 
-    # --- Model Hyperparameters ---
-    embed_dim: int = 64
+    # --- Model ---
+    embed_dim: int = 38
     num_blocks: int = 4
     in_channels: int = 3
     out_channels: int = 3
+    lonpe_scale_physical: bool = True
+    lonpe_shot_range: List[float] = field(default_factory=lambda: [1.0e-5, 5.0e-1])
+    lonpe_read_range: List[float] = field(default_factory=lambda: [1.0e-6, 1.0e-2])
 
     # --- WandB & Checkpointing ---
     wandb_project: str = "kaggle-sidd-hasst"
@@ -34,6 +36,11 @@ class Config:
     log_freq: int = 100
     val_freq: int = 1000
     checkpoint_freq: int = 5000
+    # Whether to enable wandb.watch to collect histograms. Can be expensive; set True to enable.
+    wandb_watch: bool = True
+    wandb_watch_log_freq: int = 100
+    # If True, training will raise an error when the 'mamba-ssm' package is missing.
+    require_mamba: bool = False
 
     # --- Progressive Training Schedule ---
     # Phase 1: 128x128 (Fast iterations, global features), Phase 2: 256x256, Phase 3: 384x384 (Refinement)
@@ -43,22 +50,26 @@ class Config:
     phase_milestones: List[int] = field(default_factory=lambda: [60000, 120000, 180000, 240000])
 
     # --- Optimizer ---
-    optimizer_type: str = "AdamW"
-    lr_initial: float = 2e-4
-    lr_min: float = 1e-7
+    lr_initial: float = 1.0e-4
+    lr_min: float = 1.0e-7
     beta1: float = 0.9
-    beta2: float = 0.99999
+    beta2: float = 0.999
     weight_decay: float = 0.0
 
     # --- Loss Weights ---
     charbonnier_weight: float = 1.0
-    wavelet_weight: float = 0.1
-    ssim_weight: float = 0.1
+    wavelet_weight: float = 0.05
+    ssim_weight: float = 0.0
 
     # --- DDP / DataLoader Settings ---
     num_workers: int = 4
     pin_memory: bool = True
     prefetch_factor: int = 2
+
+    # --- Performance Optimizations ---
+    channels_last: bool = True
+    cudnn_benchmark: bool = True
+    gradient_accumulation_steps: int = 1
 
     def __post_init__(self):
         """Ensures that numeric types are correctly cast from YAML and paths are Path objects."""
@@ -83,7 +94,6 @@ class Config:
                 setattr(self, f.name, Path(val))
 
         # Explicitly ensure these are Path objects as they might be Union[str, Path]
-        self.data_dir = Path(self.data_dir)
         self.lmdb_dir = Path(self.lmdb_dir)
         self.output_dir = Path(self.output_dir)
         if self.resume_path:

@@ -16,7 +16,7 @@ class WandBValidationLogger:
             wandb.init(
                 project=config.wandb_project,
                 entity=config.wandb_entity,
-                config=vars(config),
+                config=dict(vars(config)),
                 id=self.run_id,
                 resume="allow"
             )
@@ -73,10 +73,11 @@ class WandBValidationLogger:
         metrics["telemetry/total_gradient_norm"] = total_grad_norm_sq**0.5
         wandb.log(metrics, step=step, commit=commit)
 
-    def log_visual_artifacts(self, step, noisy_tensor, pred_tensor, gt_tensor, prefix="visuals", commit=True):
+    def log_visual_artifacts(self, step, noisy_tensor, pred_tensor, gt_tensor, noise_prior_tensor=None, prefix="visuals", commit=True):
         """
         Stitches images into a single comparison grid:
-        [ Noisy | Prediction | Ground Truth | Error Map ]
+        [ Noisy | Prediction | Ground Truth | Error Map | Shot Prior | Read Prior ]
+        where the last two panes are included when a 2-channel LoNPE prior is provided.
         """
         if not self.is_main_process or (step % self.val_freq != 0):
             return
@@ -87,6 +88,18 @@ class WandBValidationLogger:
             if t.dim() == 4:
                 t = t[0]
             return (t.detach().cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+
+        def to_heatmap(t):
+            if t.dim() == 4:
+                t = t[0]
+            if t.dim() == 3:
+                t = t[0]
+            arr = t.detach().cpu().numpy()
+            arr = arr - arr.min()
+            denom = max(arr.max(), 1e-8)
+            arr = (arr / denom * 255.0).astype(np.uint8)
+            heat_bgr = cv2.applyColorMap(arr, cv2.COLORMAP_VIRIDIS)
+            return cv2.cvtColor(heat_bgr, cv2.COLOR_BGR2RGB)
 
         # Convert tensors to numpy images (RGB)
         noisy_img = to_numpy(noisy_tensor)
@@ -104,14 +117,23 @@ class WandBValidationLogger:
         # Convert BGR (OpenCV) back to RGB
         error_map_color_rgb = cv2.cvtColor(error_map_color_bgr, cv2.COLOR_BGR2RGB)
 
+        panes = [noisy_img, pred_img, gt_img, error_map_color_rgb]
+
+        if noise_prior_tensor is not None:
+            if noise_prior_tensor.dim() == 4:
+                noise_prior_tensor = noise_prior_tensor[0]
+            if noise_prior_tensor.size(0) >= 2:
+                panes.append(to_heatmap(noise_prior_tensor[0:1]))
+                panes.append(to_heatmap(noise_prior_tensor[1:2]))
+
         # Stitch horizontally
-        comparison_grid = np.concatenate([noisy_img, pred_img, gt_img, error_map_color_rgb], axis=1)
+        comparison_grid = np.concatenate(panes, axis=1)
 
         wandb.log(
             {
                 f"{prefix}/comparison_grid": wandb.Image(
                     comparison_grid, 
-                    caption="Left to Right: Noisy, HASST Prediction, Ground Truth, Error Map (Viridis)"
+                    caption="Left to Right: Noisy, HASST Prediction, Ground Truth, Error Map, Shot Prior, Read Prior"
                 )
             },
             step=step,
