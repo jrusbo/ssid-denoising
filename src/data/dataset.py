@@ -80,7 +80,7 @@ class SIDDDatasetLMDB(Dataset):
         noisy_key = gt_key.replace("_gt", "_noisy")
         shape_key = gt_key.replace("_gt", "_shape")
 
-        with self.env.begin() as txn:
+        with self.env.begin(buffers=True) as txn:
             gt_buf = txn.get(gt_key.encode("ascii"))
             noisy_buf = txn.get(noisy_key.encode("ascii"))
             shape_buf = txn.get(shape_key.encode("ascii"))
@@ -89,7 +89,7 @@ class SIDDDatasetLMDB(Dataset):
                 raise KeyError(f"Data for {gt_key} not found in LMDB (Missing bytes or shape)")
 
             # Parse shape from stored metadata "H,W,C"
-            H, W, C = map(int, shape_buf.decode("ascii").split(","))
+            H, W, C = map(int, bytes(shape_buf).decode("ascii").split(","))
 
             # Reconstruct images from raw bytes (Direct view to avoid copy)
             gt_img = np.frombuffer(gt_buf, dtype=np.uint8).reshape(H, W, C)
