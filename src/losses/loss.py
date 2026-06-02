@@ -100,12 +100,16 @@ class CompositeLoss(nn.Module):
         self.config = config
         self.charbonnier = CharbonnierLoss()
         self.wavelet = WaveletLoss()
-        self.ssim = SSIMLoss(channels=config.out_channels)
+        # Avoid building SSIM branch when it is disabled by config.
+        self.ssim = SSIMLoss(channels=config.out_channels) if config.ssim_weight != 0.0 else None
 
     def forward(self, pred, target):
         l_char = self.charbonnier(pred, target)
         l_wave = self.wavelet(pred, target)
-        l_ssim = self.ssim(pred, target)
+        if self.ssim is not None:
+            l_ssim = self.ssim(pred, target)
+        else:
+            l_ssim = pred.new_tensor(0.0)
 
         # Total balanced loss using config weights
         total_loss = (
