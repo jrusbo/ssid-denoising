@@ -23,7 +23,7 @@ def compute_psnr(pred, gt):
     # Average across all dimensions except the batch dimension
     if mse.dim() == 4:
         # Batched input (B, C, H, W)
-        mse = mse.view(mse.size(0), -1).mean(dim=1)
+        mse = mse.reshape(mse.size(0), -1).mean(dim=1)
         psnr = 10 * torch.log10(torch.tensor(1.0, device=mse.device, dtype=mse.dtype) / (mse + 1e-10))
         return psnr.sum() # Return tensor
     else:

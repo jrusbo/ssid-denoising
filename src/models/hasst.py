@@ -115,7 +115,7 @@ class HASST(nn.Module):
         self.intro = nn.Conv2d(in_channels, embed_dim, kernel_size=3, padding=1)
 
         # 3. U-Net structure
-        blk_nums = [2, 2, 2, 2] # 4 stages
+        blk_nums = [2] * num_blocks  # dynamically create stages based on num_blocks parameter
         self.enc = nn.ModuleList()
         self.down = nn.ModuleList()
         c = embed_dim

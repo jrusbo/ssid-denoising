@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+cv2.setNumThreads(0)
+
 
 class SIDDDatasetLMDB(Dataset):
     def __init__(self, lmdb_dir, patch_size=128, split="train", split_ratio=0.9, seed=42):
@@ -90,7 +92,7 @@ class SIDDDatasetLMDB(Dataset):
 
             # Parse shape from stored metadata "H,W,C"
             H, W, C = map(int, shape_buf.decode("ascii").split(","))
-            
+
             # Reconstruct images from raw bytes (Direct view to avoid copy)
             gt_img = np.frombuffer(gt_buf, dtype=np.uint8).reshape(H, W, C)
             noisy_img = np.frombuffer(noisy_buf, dtype=np.uint8).reshape(H, W, C)
