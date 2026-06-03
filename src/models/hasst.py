@@ -115,14 +115,20 @@ class HASST(nn.Module):
         self.intro = nn.Conv2d(in_channels, embed_dim, kernel_size=3, padding=1)
 
         # 3. U-Net structure
-        # num_blocks = TOTAL HASSTBlocks across the entire network.
-        # We fix 4 U-Net scales and distribute blocks evenly across enc/dec stages,
-        # with the remainder (or a fixed floor) going to the bottleneck mid section.
+        # num_blocks is interpreted as the exact TOTAL HASST blocks across encoder + mid + decoder.
+        # We keep 4 fixed scales and distribute depth as evenly as possible across scales.
         num_scales = 4
-        mid_blocks = max(2, num_blocks // 17)  # ~6% of total go to mid; at least 2
-        remaining = num_blocks - mid_blocks
-        blocks_per_stage = max(1, remaining // (2 * num_scales))
-        blk_nums = [blocks_per_stage] * num_scales
+        mid_blocks = 2
+        remaining = max(0, num_blocks - mid_blocks)
+        if remaining % 2 == 1:
+            # Keep encoder/decoder symmetric: their total must be even.
+            mid_blocks += 1
+            remaining -= 1
+
+        enc_total = remaining // 2
+        base_per_stage = enc_total // num_scales
+        stage_remainder = enc_total % num_scales
+        blk_nums = [base_per_stage + (1 if i < stage_remainder else 0) for i in range(num_scales)]
 
         self.enc = nn.ModuleList()
         self.down = nn.ModuleList()
