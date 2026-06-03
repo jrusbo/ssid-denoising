@@ -21,8 +21,8 @@ class Config:
     resume_path: Optional[Union[str, Path]] = None
 
     # --- Model ---
-    embed_dim: int = 38
-    num_blocks: int = 4
+    embed_dim: int = 37  # Base embedding dimension. Report HASST uses 37 to achieve 18.7M parameters with 20 blocks.
+    num_blocks: int = 20  # Total HASSTBlocks across the network (distributed: [2,2,2,2] enc/dec + 2 mid). Report: 18.7M params
     in_channels: int = 3
     out_channels: int = 3
     lonpe_scale_physical: bool = True

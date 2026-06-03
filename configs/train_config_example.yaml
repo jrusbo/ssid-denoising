@@ -21,8 +21,8 @@ resume_path: null             # Specific path to a .pth checkpoint file to resum
                               # If 'resume' is true and this is null, it searches for 'last_model.pth' in output_dir.
 
 # --- Model Hyperparameters ---
-embed_dim: 38                 # The base embedding dimension for the network. Higher values increase model capacity but use more VRAM.
-num_blocks: 4                 # Number of blocks/stages in the U-Net structure.
+embed_dim: 37                 # The base embedding dimension. Report HASST: 37 → 18.7M parameters
+num_blocks: 20                # Total HASSTBlocks in the network. Distribution: [2,2,2,2] enc/dec + 2 mid. Report: 18.7M params
 in_channels: 3                # Number of input color channels (3 for RGB).
 out_channels: 3               # Number of output color channels (3 for RGB).
 lonpe_scale_physical: true    # Map LoNPE outputs to physically meaningful shot/read ranges.

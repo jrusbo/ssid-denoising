@@ -115,7 +115,15 @@ class HASST(nn.Module):
         self.intro = nn.Conv2d(in_channels, embed_dim, kernel_size=3, padding=1)
 
         # 3. U-Net structure
-        blk_nums = [2] * num_blocks  # dynamically create stages based on num_blocks parameter
+        # num_blocks = TOTAL HASSTBlocks across the entire network.
+        # We fix 4 U-Net scales and distribute blocks evenly across enc/dec stages,
+        # with the remainder (or a fixed floor) going to the bottleneck mid section.
+        num_scales = 4
+        mid_blocks = max(2, num_blocks // 17)  # ~6% of total go to mid; at least 2
+        remaining = num_blocks - mid_blocks
+        blocks_per_stage = max(1, remaining // (2 * num_scales))
+        blk_nums = [blocks_per_stage] * num_scales
+
         self.enc = nn.ModuleList()
         self.down = nn.ModuleList()
         c = embed_dim
@@ -124,7 +132,7 @@ class HASST(nn.Module):
             self.down.append(nn.Conv2d(c, c * 2, kernel_size=2, stride=2))
             c *= 2
 
-        self.mid = nn.ModuleList([HASSTBlock(c) for _ in range(2)])
+        self.mid = nn.ModuleList([HASSTBlock(c) for _ in range(mid_blocks)])
 
         self.up = nn.ModuleList()
         self.dec = nn.ModuleList()
