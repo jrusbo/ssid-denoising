@@ -1,6 +1,13 @@
 import argparse
+import base64
+import os
+import shutil
+import tempfile
+import zipfile
 
+import h5py
 import numpy as np
+import pandas as pd
 import scipy.io
 import torch
 from tqdm import tqdm
@@ -9,17 +16,29 @@ from models.hasst import HASST
 from models.inference import HASSTInferenceEngine
 
 
+def array_to_base64string(x):
+    """Encodes a numpy array into a base64 string."""
+    array_bytes = x.tobytes()
+    base64_bytes = base64.b64encode(array_bytes)
+    base64_string = base64_bytes.decode('utf-8')
+    return base64_string
+
+
 def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
     """
     Inference script for the official SIDD Benchmark (sRGB).
-    Loads BenchmarkNoisyBlocksSrgb.mat and saves SubmitSrgb.mat.
+    Loads BenchmarkNoisyBlocksSrgb.mat (or .zip) and saves a Base64 encoded CSV.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # 1. Load Model
     print(f"Loading checkpoint from {model_path}...")
-    checkpoint = torch.load(model_path, map_location="cpu")
+    try:
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        # Fallback for older torch versions that don't support weights_only
+        checkpoint = torch.load(model_path, map_location="cpu")
     
     # Extract config from checkpoint if available to avoid hardcoding
     if "model_config" in checkpoint:
@@ -49,11 +68,42 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
     model.eval()
 
     # 2. Load Benchmark Data
-    print(f"Loading benchmark file: {benchmark_path}")
-    mat_data = scipy.io.loadmat(benchmark_path)
-    # The variable inside SIDD Benchmark MAT is usually 'BenchmarkNoisyBlocksSrgb'
-    noisy_blocks = mat_data["BenchmarkNoisyBlocksSrgb"]  # Shape: (40, 32, 256, 256, 3)
+    temp_dir = None
+    actual_benchmark_path = benchmark_path
+
+    if benchmark_path.endswith(".zip"):
+        print(f"Detected ZIP file: {benchmark_path}. Extracting...")
+        temp_dir = tempfile.mkdtemp()
+        with zipfile.ZipFile(benchmark_path, 'r') as z:
+            mat_files = [f for f in z.namelist() if f.endswith(".mat")]
+            if not mat_files:
+                raise FileNotFoundError("No .mat file found inside the ZIP archive.")
+            # Use the first .mat file found
+            z.extract(mat_files[0], temp_dir)
+            actual_benchmark_path = os.path.join(temp_dir, mat_files[0])
+            print(f"Extracted to {actual_benchmark_path}")
+
+    print(f"Loading benchmark file: {actual_benchmark_path}")
+    key = "BenchmarkNoisyBlocksSrgb"
     
+    try:
+        try:
+            mat_data = scipy.io.loadmat(actual_benchmark_path)
+            noisy_blocks = mat_data[key]
+        except NotImplementedError:
+            print("Detected MATLAB v7.3 file. Loading with h5py...")
+            with h5py.File(actual_benchmark_path, 'r') as f:
+                # h5py loads with shape (C, W, H, num_blocks, num_scenes)
+                # We need (num_scenes, num_blocks, H, W, C)
+                noisy_blocks = np.array(f[key])
+                noisy_blocks = noisy_blocks.transpose(4, 3, 2, 1, 0)
+    finally:
+        # Cleanup temporary directory if it was created
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            print("Cleaned up temporary extraction directory.")
+    
+    # Shape: (40, 32, 256, 256, 3)
     num_scenes, num_blocks, H, W, C = noisy_blocks.shape
     print(f"Found {num_scenes} scenes with {num_blocks} blocks each ({H}x{W}px)")
 
@@ -88,16 +138,31 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
 
     # 5. Save Results
     print(f"Saving results to {output_path}...")
-    # Variable name MUST be 'DenoisedBlocksSrgb' for the Kaggle submission system
-    scipy.io.savemat(output_path, {"DenoisedBlocksSrgb": denoised_blocks})
-    print("Prediction complete!")
+    
+    output_blocks_base64string = []
+    for s in range(num_scenes):
+        for b in range(num_blocks):
+            # Each block is (H, W, C) uint8
+            out_block = denoised_blocks[s, b]
+            out_block_base64string = array_to_base64string(out_block)
+            output_blocks_base64string.append(out_block_base64string)
+
+    output_df = pd.DataFrame()
+    n_total_blocks = len(output_blocks_base64string)
+    print(f"Total number of blocks to save: {n_total_blocks}")
+    
+    output_df['ID'] = np.arange(n_total_blocks)
+    output_df['BLOCK'] = output_blocks_base64string
+    
+    output_df.to_csv(output_path, index=False)
+    print(f"Prediction complete! CSV saved to {output_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict SIDD Benchmark Blocks")
     parser.add_argument("--model", type=str, required=True, help="Path to best_model.pth")
     parser.add_argument("--benchmark", type=str, required=True, help="Path to BenchmarkNoisyBlocksSrgb.mat")
-    parser.add_argument("--output", type=str, default="SubmitSrgb.mat", help="Output filename")
+    parser.add_argument("--output", type=str, default="SubmitSrgb.csv", help="Output filename")
     parser.add_argument("--no_tta", action="store_true", help="Disable Test-Time Augmentation (faster but lower PSNR)")
     
     args = parser.parse_args()

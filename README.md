@@ -91,7 +91,7 @@ uv run accelerate launch src/train.py --config configs/default.yaml
 #### Step C: High-Quality Inference (Benchmark)
 ```bash
 # Generate the final submission for the SIDD Benchmark
-uv run python src/predict_benchmark.py --model checkpoints/best_model.pth --benchmark /path/to/BenchmarkNoisyBlocksSrgb.mat --output SubmitSrgb.mat
+uv run python src/predict_benchmark.py --model checkpoints/best_model.pth --benchmark /path/to/BenchmarkNoisyBlocksSrgb.mat --output SubmitSrgb.csv
 ```
 
 ---
