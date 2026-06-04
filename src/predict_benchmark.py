@@ -1,4 +1,9 @@
 import argparse
+import base64
+import os
+import tempfile
+import zipfile
+from pathlib import Path
 
 import numpy as np
 import scipy.io
@@ -9,17 +14,29 @@ from models.hasst import HASST
 from models.inference import HASSTInferenceEngine
 
 
+def array_to_base64string(x):
+    """Converts a numpy array to a base64 encoded string."""
+    array_bytes = x.tobytes()
+    base64_bytes = base64.b64encode(array_bytes)
+    base64_string = base64_bytes.decode('utf-8')
+    return base64_string
+
+
 def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
     """
     Inference script for the official SIDD Benchmark (sRGB).
-    Loads BenchmarkNoisyBlocksSrgb.mat and saves SubmitSrgb.mat.
+    Loads BenchmarkNoisyBlocksSrgb.mat and saves SubmitSrgb.mat and SubmitSrgb.csv.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # 1. Load Model
     print(f"Loading checkpoint from {model_path}...")
-    checkpoint = torch.load(model_path, map_location="cpu")
+    try:
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        # Fallback for older PyTorch versions (< 2.4)
+        checkpoint = torch.load(model_path, map_location="cpu")
     
     # Extract config from checkpoint if available to avoid hardcoding
     if "model_config" in checkpoint:
@@ -50,6 +67,23 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
 
     # 2. Load Benchmark Data
     print(f"Loading benchmark file: {benchmark_path}")
+    
+    # Handle zipped benchmark file
+    if str(benchmark_path).endswith(".zip"):
+        print("Zip file detected. Extracting...")
+        temp_dir = tempfile.TemporaryDirectory()
+        with zipfile.ZipFile(benchmark_path, 'r') as zip_ref:
+            # Look for a .mat file inside the zip
+            mat_files = [f for f in zip_ref.namelist() if f.endswith(".mat")]
+            if not mat_files:
+                raise FileNotFoundError(f"No .mat file found inside {benchmark_path}")
+            
+            # Prefer 'BenchmarkNoisyBlocksSrgb.mat' if it exists, otherwise take the first one
+            target_mat = "BenchmarkNoisyBlocksSrgb.mat" if "BenchmarkNoisyBlocksSrgb.mat" in mat_files else mat_files[0]
+            zip_ref.extract(target_mat, temp_dir.name)
+            benchmark_path = os.path.join(temp_dir.name, target_mat)
+            print(f"Extracted {target_mat} to temporary directory.")
+
     mat_data = scipy.io.loadmat(benchmark_path)
     # The variable inside SIDD Benchmark MAT is usually 'BenchmarkNoisyBlocksSrgb'
     noisy_blocks = mat_data["BenchmarkNoisyBlocksSrgb"]  # Shape: (40, 32, 256, 256, 3)
@@ -62,6 +96,7 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
 
     # 4. Process Blocks
     denoised_blocks = np.zeros_like(noisy_blocks, dtype=np.uint8)
+    output_blocks_base64string = []
 
     scene_pbar = tqdm(range(num_scenes), desc="Total Progress", mininterval=5.0)
     for s in scene_pbar:
@@ -85,7 +120,11 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
             # Postprocess: (1, C, H, W) [0, 1] -> (H, W, C) [0, 255]
             # NumPy does not always support bfloat16 tensors from autocast inference.
             pred_np = pred_tensor.squeeze(0).permute(1, 2, 0).float().cpu().numpy()
-            denoised_blocks[s, b] = (pred_np * 255.0).round().astype(np.uint8)
+            denoised_block = (pred_np * 255.0).round().astype(np.uint8)
+            denoised_blocks[s, b] = denoised_block
+            
+            # Convert to base64 for Kaggle submission
+            output_blocks_base64string.append(array_to_base64string(denoised_block))
 
     # 5. Save Results
     print(f"Saving results to {output_path}...")
@@ -96,18 +135,12 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
 
     # Generate Kaggle expected CSV mapping format
     if output_path.endswith(".csv"):
-        # Create CSV mapping for the 1000 bounding boxes
         import csv
         with open(output_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["Id", "Predicted"])
-            for s in range(40):
-                for b in range(32):
-                    # We flatten the denoised block to map precisely to bounding boxes constraints
-                    writer.writerow([
-                        f"{s:04d}_{b:02d}",
-                        " ".join(map(str, denoised_blocks[s, b].flatten()[:10]))  # abbreviated for size
-                    ])
+            writer.writerow(["ID", "BLOCK"])
+            for idx, b64_str in enumerate(output_blocks_base64string):
+                writer.writerow([idx, b64_str])
         print(f"CSV payload generated at {output_path}")
 
     print("Prediction complete!")
@@ -122,5 +155,5 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Ensure src is in PYTHONPATH if running from root
     predict_benchmark(args.model, args.benchmark, args.output, use_tta=not args.no_tta)
+
