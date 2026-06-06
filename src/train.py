@@ -279,6 +279,9 @@ def run_training(cfg: Config, start_time: float = None):
                     and global_step >= cfg.phase_milestones[current_phase]
                 ):
                     current_phase += 1
+
+                # Safety: Clamp current_phase to the number of available configurations
+                current_phase = min(current_phase, len(cfg.patch_sizes) - 1, len(cfg.batch_sizes) - 1)
         else:
             accelerator.print("Warning: 'resume' is True but no valid checkpoint was found. Starting from scratch.")
             wandb_run_id = cfg.wandb_run_id
