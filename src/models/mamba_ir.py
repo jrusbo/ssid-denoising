@@ -13,10 +13,17 @@ def get_mamba_class():
         from mamba_ssm.modules.mamba_simple import Mamba as MambaClass
         Mamba = MambaClass
     except ImportError:
-        import warnings
-        warnings.warn("mamba_ssm not found. AttentiveStateSpaceBlock will fallback to Zero for the global branch. "
-                      "Please install mamba-ssm and causal-conv1d.")
-        Mamba = False # Mark as not found
+        try:
+            from models.mamba_simple import MambaSimple
+            import warnings
+            warnings.warn("mamba_ssm not found. Falling back to pure PyTorch MambaSimple. "
+                          "Inference will be slower but PSNR will be preserved.")
+            Mamba = MambaSimple
+        except ImportError:
+            import warnings
+            warnings.warn("mamba_ssm and mamba_simple not found. AttentiveStateSpaceBlock will fallback to Zero for the global branch. "
+                          "Please install mamba-ssm or ensure models/mamba_simple.py exists.")
+            Mamba = False # Mark as not found
     return Mamba
 
 

@@ -26,15 +26,22 @@ class SIDDDatasetLMDB(Dataset):
         temp_env.close()
 
         # Deterministic split: Use a local random instance to avoid side effects
+        # FIX: Group keys by scene (assuming blocks of 10 sequential images per scene in LMDB)
+        # to prevent data leakage between train and validation sets.
+        chunk_size = 10
+        chunks = [all_keys[i:i + chunk_size] for i in range(0, len(all_keys), chunk_size)]
+        
         rng = random.Random(seed)
-        rng.shuffle(all_keys)
-        split_idx = int(len(all_keys) * split_ratio)
+        rng.shuffle(chunks)
+        
+        split_idx = int(len(chunks) * split_ratio)
         
         if split == "train":
-            self.keys = all_keys[:split_idx]
+            selected_chunks = chunks[:split_idx]
         else:
-            self.keys = all_keys[split_idx:]
+            selected_chunks = chunks[split_idx:]
             
+        self.keys = [key for chunk in selected_chunks for key in chunk]
         self.num_images = len(self.keys)
 
     def _init_lmdb(self):
