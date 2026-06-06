@@ -22,6 +22,7 @@ def read_image_pair(pair):
     shape_val = f"{gt_img.shape[0]},{gt_img.shape[1]},{gt_img.shape[2]}"
     return {
         "idx": idx,
+        "scene_name": gt_path.parent.name, # Capture the scene folder name
         "gt": np.ascontiguousarray(gt_img).tobytes(),
         "noisy": np.ascontiguousarray(noisy_img).tobytes(),
         "shape": shape_val
@@ -97,10 +98,11 @@ def create_lmdb(data_dir, lmdb_path, commit_interval=100, num_workers=None):
                     continue
                 
                 idx = res["idx"]
-                # Use 6 digits for padding to support > 100k images safely
-                gt_key = f"{idx:06d}_gt".encode("ascii")
-                noisy_key = f"{idx:06d}_noisy".encode("ascii")
-                shape_key = f"{idx:06d}_shape".encode("ascii")
+                scene_name = res["scene_name"]
+                # Use scene name in keys to enable scene-based splitting in the dataset
+                gt_key = f"{scene_name}_{idx:06d}_gt".encode("ascii")
+                noisy_key = f"{scene_name}_{idx:06d}_noisy".encode("ascii")
+                shape_key = f"{scene_name}_{idx:06d}_shape".encode("ascii")
 
                 txn.put(gt_key, res["gt"])
                 txn.put(noisy_key, res["noisy"])

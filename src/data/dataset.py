@@ -26,33 +26,36 @@ class SIDDDatasetLMDB(Dataset):
         temp_env.close()
 
         # Deterministic split: Use a local random instance to avoid side effects
-        # FIX: Group keys by scene (assuming blocks of 10 sequential images per scene in LMDB)
-        # to prevent data leakage between train and validation sets.
-        chunk_size = 10
-        chunks = [all_keys[i:i + chunk_size] for i in range(0, len(all_keys), chunk_size)]
+        # Group keys by scene ID (extracted from the new key format "SceneID_idx_gt")
+        from collections import defaultdict
+        scene_to_keys = defaultdict(list)
+        for key in all_keys:
+            # SIDD folder names usually start with the Scene ID (e.g., 0001_...)
+            scene_id = key.split('_')[0]
+            scene_to_keys[scene_id].append(key)
+        
+        unique_scenes = sorted(list(scene_to_keys.keys()))
         
         rng = random.Random(seed)
-        rng.shuffle(chunks)
+        rng.shuffle(unique_scenes)
         
-        num_chunks = len(chunks)
-        if num_chunks == 0:
-            raise ValueError(f"No keys found in LMDB directory: {self.lmdb_dir}")
+        num_scenes = len(unique_scenes)
+        if num_scenes == 0:
+            raise ValueError(f"No valid scenes found in LMDB directory: {self.lmdb_dir}")
 
-        split_idx = max(1, min(num_chunks - 1, int(num_chunks * split_ratio)))
+        split_idx = max(1, min(num_scenes - 1, int(num_scenes * split_ratio)))
         
-        # Special case for very small datasets: ensure at least one chunk for both if possible
-        if num_chunks == 1:
-            # If there's only one chunk, we can't split without leakage unless we split the chunk
-            # but for safety let's just use it for both for now to prevent crash
-            selected_chunks = chunks
+        if split == "train":
+            selected_scenes = unique_scenes[:split_idx]
         else:
-            if split == "train":
-                selected_chunks = chunks[:split_idx]
-            else:
-                selected_chunks = chunks[split_idx:]
+            selected_scenes = unique_scenes[split_idx:]
             
-        self.keys = [key for chunk in selected_chunks for key in chunk]
+        self.keys = []
+        for scene in selected_scenes:
+            self.keys.extend(scene_to_keys[scene])
+            
         self.num_images = len(self.keys)
+        print(f"Dataset split ({split}): {len(selected_scenes)} scenes, {self.num_images} images.")
 
     def _init_lmdb(self):
         """Initializes the LMDB environment for the current process."""
