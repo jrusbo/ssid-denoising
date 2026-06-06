@@ -1,4 +1,8 @@
 import argparse
+import base64
+import csv
+import os
+import zipfile
 
 import numpy as np
 import scipy.io
@@ -9,17 +13,41 @@ from models.hasst import HASST
 from models.inference import HASSTInferenceEngine
 
 
-def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
+def array_to_base64string(x):
+    """Converts a numpy array to a base64 encoded string."""
+    array_bytes = x.tobytes()
+    base64_bytes = base64.b64encode(array_bytes)
+    base64_string = base64_bytes.decode("utf-8")
+    return base64_string
+
+
+def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True, patch_size=256):
     """
     Inference script for the official SIDD Benchmark (sRGB).
-    Loads BenchmarkNoisyBlocksSrgb.mat and saves SubmitSrgb.mat.
+    Loads BenchmarkNoisyBlocksSrgb.mat and saves SubmitSrgb.csv (and .mat).
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # 0. Strict Dependency Check for Mamba
+    try:
+        import mamba_ssm
+        print("Dependency 'mamba_ssm' found. Global branch active.")
+    except ImportError:
+        print("\n" + "!" * 80)
+        print("CRITICAL WARNING: 'mamba_ssm' not found!")
+        print("The AttentiveStateSpaceBlock will ZERO OUT its global branch.")
+        print("This will cause a significant drop in PSNR (approx ~1.0 dB).")
+        print("Please install it with: pip install mamba-ssm causal-conv1d")
+        print("!" * 80 + "\n")
+
     # 1. Load Model
     print(f"Loading checkpoint from {model_path}...")
-    checkpoint = torch.load(model_path, map_location="cpu")
+    try:
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        # Fallback for older torch versions that don't have weights_only
+        checkpoint = torch.load(model_path, map_location="cpu")
     
     # Extract config from checkpoint if available to avoid hardcoding
     if "model_config" in checkpoint:
@@ -49,10 +77,45 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
     model.eval()
 
     # 2. Load Benchmark Data
+    if benchmark_path.endswith(".zip"):
+        print(f"Detected ZIP file: {benchmark_path}. Searching for .mat file inside...")
+        with zipfile.ZipFile(benchmark_path, "r") as zip_ref:
+            mat_files = [f for f in zip_ref.namelist() if f.endswith(".mat")]
+            if not mat_files:
+                raise FileNotFoundError("No .mat file found inside the ZIP archive.")
+            
+            # Use the first .mat file found
+            mat_name = mat_files[0]
+            target_path = os.path.join(os.path.dirname(benchmark_path), mat_name)
+            
+            if not os.path.exists(target_path):
+                print(f"Extracting {mat_name} to {target_path}...")
+                zip_ref.extract(mat_name, path=os.path.dirname(benchmark_path))
+            else:
+                print(f"Extracted file {mat_name} already exists.")
+            
+            benchmark_path = target_path
+
     print(f"Loading benchmark file: {benchmark_path}")
-    mat_data = scipy.io.loadmat(benchmark_path)
-    # The variable inside SIDD Benchmark MAT is usually 'BenchmarkNoisyBlocksSrgb'
-    noisy_blocks = mat_data["BenchmarkNoisyBlocksSrgb"]  # Shape: (40, 32, 256, 256, 3)
+    try:
+        mat_data = scipy.io.loadmat(benchmark_path)
+        # The variable inside SIDD Benchmark MAT is 'BenchmarkNoisyBlocksSrgb'
+        noisy_blocks = mat_data["BenchmarkNoisyBlocksSrgb"]  # Shape: (40, 32, 256, 256, 3)
+    except NotImplementedError:
+        print("Detected MATLAB v7.3 file. Using h5py for loading...")
+        try:
+            import h5py
+        except ImportError:
+            raise ImportError(
+                "h5py is required to load MATLAB v7.3 files. "
+                "Please install it with 'pip install h5py'."
+            )
+        
+        with h5py.File(benchmark_path, "r") as f:
+            # HDF5 (h5py) loads data in (C, W, H, blocks, scenes) order for v7.3 MAT files.
+            # We must transpose to (scenes, blocks, H, W, C).
+            dataset = f["BenchmarkNoisyBlocksSrgb"]
+            noisy_blocks = np.array(dataset).transpose(4, 3, 2, 1, 0)
     
     num_scenes, num_blocks, H, W, C = noisy_blocks.shape
     print(f"Found {num_scenes} scenes with {num_blocks} blocks each ({H}x{W}px)")
@@ -62,6 +125,7 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
 
     # 4. Process Blocks
     denoised_blocks = np.zeros_like(noisy_blocks, dtype=np.uint8)
+    output_blocks_base64string = []
 
     scene_pbar = tqdm(range(num_scenes), desc="Total Progress", mininterval=5.0)
     for s in scene_pbar:
@@ -72,42 +136,40 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True):
             block_tensor = torch.from_numpy(block).permute(2, 0, 1).unsqueeze(0).to(device)
 
             # Inference with mixed precision for maximum A100 throughput
-            # We use bfloat16 on A100 as it's faster and more stable than fp16
             dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float16
             with torch.no_grad(), torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type == "cuda"):
                 if use_tta:
                     # 8x Geometric Self-Ensemble with TLC wrapper
-                    pred_tensor = engine.forward_tlc(block_tensor, patch_size=128)
+                    pred_tensor = engine.forward_tlc(block_tensor, patch_size=patch_size)
                 else:
                     # Single Forward Pass
                     pred_tensor = model(block_tensor)
 
             # Postprocess: (1, C, H, W) [0, 1] -> (H, W, C) [0, 255]
-            # NumPy does not always support bfloat16 tensors from autocast inference.
             pred_np = pred_tensor.squeeze(0).permute(1, 2, 0).float().cpu().numpy()
-            denoised_blocks[s, b] = (pred_np * 255.0).round().astype(np.uint8)
+            out_block = (pred_np * 255.0).round().clip(0, 255).astype(np.uint8)
+            
+            denoised_blocks[s, b] = out_block
+            output_blocks_base64string.append(array_to_base64string(out_block))
 
     # 5. Save Results
     print(f"Saving results to {output_path}...")
 
     # Save the original .mat file (required by standard SIDD script)
     mat_path = output_path.replace(".csv", ".mat")
-    scipy.io.savemat(mat_path, {"DenoisedBlocksSrgb": denoised_blocks})
+    # We save both 'Idenoised' (Kaggle standard) and 'DenoisedBlocksSrgb' (SIDD standard)
+    scipy.io.savemat(mat_path, {
+        "Idenoised": denoised_blocks,
+        "DenoisedBlocksSrgb": denoised_blocks
+    })
 
     # Generate Kaggle expected CSV mapping format
     if output_path.endswith(".csv"):
-        # Create CSV mapping for the 1000 bounding boxes
-        import csv
         with open(output_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["Id", "Predicted"])
-            for s in range(40):
-                for b in range(32):
-                    # We flatten the denoised block to map precisely to bounding boxes constraints
-                    writer.writerow([
-                        f"{s:04d}_{b:02d}",
-                        " ".join(map(str, denoised_blocks[s, b].flatten()[:10]))  # abbreviated for size
-                    ])
+            writer.writerow(["ID", "BLOCK"])
+            for i, block_b64 in enumerate(output_blocks_base64string):
+                writer.writerow([i, block_b64])
         print(f"CSV payload generated at {output_path}")
 
     print("Prediction complete!")
@@ -118,9 +180,10 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, required=True, help="Path to best_model.pth")
     parser.add_argument("--benchmark", type=str, required=True, help="Path to BenchmarkNoisyBlocksSrgb.mat")
     parser.add_argument("--output", type=str, default="SubmitSrgb.csv", help="Output filename")
+    parser.add_argument("--patch_size", type=int, default=256, help="Patch size for inference (use 256 for SIDD Benchmark)")
     parser.add_argument("--no_tta", action="store_true", help="Disable Test-Time Augmentation (faster but lower PSNR)")
     
     args = parser.parse_args()
     
     # Ensure src is in PYTHONPATH if running from root
-    predict_benchmark(args.model, args.benchmark, args.output, use_tta=not args.no_tta)
+    predict_benchmark(args.model, args.benchmark, args.output, use_tta=not args.no_tta, patch_size=args.patch_size)

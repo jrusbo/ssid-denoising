@@ -66,7 +66,8 @@ class HASSTInferenceEngine:
             transformed_input = self._apply_tta(x, mode)
             pred = self.model(transformed_input)
             inverted_pred = self._invert_tta(pred, mode)
-            tta_result = tta_result + (inverted_pred / 8.0)
+            # Accumulate in float32 to prevent precision drift from low-bit autocast
+            tta_result = tta_result + (inverted_pred.float() / 8.0)
 
         return tta_result
 
