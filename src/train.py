@@ -456,14 +456,15 @@ def run_training(cfg: Config, start_time: float = None):
             accelerator.print(f"Re-igniting training: Updating Learning Rate to {cfg.lr_initial:.2e}")
             for param_group in optimizer.param_groups:
                 param_group['lr'] = cfg.lr_initial
-            # Update scheduler as well to reflect the new starting point
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            
+            # Re-create scheduler to reflect the new starting point and remaining steps
+            new_scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=cfg.total_iters - global_step, eta_min=cfg.lr_min
             )
-            # Re-wrap scheduler with accelerator
-            scheduler = accelerator.prepare(scheduler)
+            # Replace the old scheduler with the new one (Accelerator handles the wrapper swap)
+            scheduler = accelerator.prepare(new_scheduler)
         elif current_lr != cfg.lr_initial:
-            # Sync for safety
+            # Sync for safety if they are close but not identical
             for param_group in optimizer.param_groups:
                 param_group['lr'] = current_lr
 
@@ -607,7 +608,7 @@ def run_training(cfg: Config, start_time: float = None):
                 # Logging Logic
                 logged_this_step = False
 
-                if global_step % cfg.log_freq == 0:
+                if global_step % cfg.log_freq == 0 and 'loss' in locals() and 'loss_dict' in locals():
                     elapsed = time.time() - batch_start_time
                     img_per_sec = (cfg.batch_sizes[current_phase] * accelerator.num_processes * cfg.log_freq) / elapsed if elapsed > 0 else 0
                     gpu_mem_gb = torch.cuda.max_memory_reserved() / (1024**3) if torch.cuda.is_available() else 0
