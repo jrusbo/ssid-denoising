@@ -443,8 +443,30 @@ def run_training(cfg: Config, start_time: float = None):
             accelerator.print("Exact RNG states restored.")
         
         # Verify LR restoration
-        current_lr = scheduler.get_last_lr()[0]
-        accelerator.print(f"Restored Learning Rate: {current_lr:.2e}")
+        try:
+            current_lr = scheduler.get_last_lr()[0]
+            accelerator.print(f"Restored Learning Rate: {current_lr:.2e}")
+        except (AttributeError, TypeError, IndexError):
+            current_lr = cfg.lr_initial # Fallback
+            accelerator.print(f"Warning: Could not restore LR from scheduler. Using config value: {current_lr:.2e}")
+        
+        # FIX: If we are doing a "Podium Push", we want to use the NEW lr_initial from the config,
+        # not the old decayed one from the checkpoint.
+        if abs(current_lr - cfg.lr_initial) > 1e-9:
+            accelerator.print(f"Re-igniting training: Updating Learning Rate to {cfg.lr_initial:.2e}")
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = cfg.lr_initial
+            # Update scheduler as well to reflect the new starting point
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=cfg.total_iters - global_step, eta_min=cfg.lr_min
+            )
+            # Re-wrap scheduler with accelerator
+            scheduler = accelerator.prepare(scheduler)
+        elif current_lr != cfg.lr_initial:
+            # Sync for safety
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
+
         if accelerator.is_main_process:
             accelerator.print(f"Weights/states restored in {time.time() - restore_start:.2f}s")
 
@@ -728,6 +750,8 @@ def main():
             cfg = Config.load_from_yaml(str(path))
             run_training(cfg, start_time=start_time)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             logger_cli.error(f"Failed to process config {path}: {e}")
             continue
 

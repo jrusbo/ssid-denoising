@@ -34,12 +34,22 @@ class SIDDDatasetLMDB(Dataset):
         rng = random.Random(seed)
         rng.shuffle(chunks)
         
-        split_idx = int(len(chunks) * split_ratio)
+        num_chunks = len(chunks)
+        if num_chunks == 0:
+            raise ValueError(f"No keys found in LMDB directory: {self.lmdb_dir}")
+
+        split_idx = max(1, min(num_chunks - 1, int(num_chunks * split_ratio)))
         
-        if split == "train":
-            selected_chunks = chunks[:split_idx]
+        # Special case for very small datasets: ensure at least one chunk for both if possible
+        if num_chunks == 1:
+            # If there's only one chunk, we can't split without leakage unless we split the chunk
+            # but for safety let's just use it for both for now to prevent crash
+            selected_chunks = chunks
         else:
-            selected_chunks = chunks[split_idx:]
+            if split == "train":
+                selected_chunks = chunks[:split_idx]
+            else:
+                selected_chunks = chunks[split_idx:]
             
         self.keys = [key for chunk in selected_chunks for key in chunk]
         self.num_images = len(self.keys)
