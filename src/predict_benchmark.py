@@ -72,7 +72,7 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True, pat
         name = k.replace("module.", "").replace("_orig_mod.", "")
         clean_state_dict[name] = v
         
-    model.load_state_dict(clean_state_dict)
+    _load_model_weights(model, clean_state_dict, allow_missing_mamba=allow_missing_mamba)
     model = model.to(device)
     model.eval()
 
@@ -205,7 +205,12 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="SubmitSrgb.csv", help="Output filename")
     parser.add_argument("--patch_size", type=int, default=256, help="Patch size for inference (use 256 for SIDD Benchmark)")
     parser.add_argument("--no_tta", action="store_true", help="Disable Test-Time Augmentation (faster but lower PSNR)")
-    
+    parser.add_argument(
+        "--allow_missing_mamba",
+        action="store_true",
+        help="Allow loading checkpoints even if Mamba weights cannot be mapped (degraded fallback).",
+    )
+
     args = parser.parse_args()
     
     # Ensure src is in PYTHONPATH if running from root
