@@ -21,7 +21,32 @@ def array_to_base64string(x):
     return base64_string
 
 
-def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True, patch_size=256):
+def _load_model_weights(model, state_dict, allow_missing_mamba=False):
+    """
+    Surgically loads weights, handling missing Mamba dependencies if requested.
+    """
+    model_keys = set(model.state_dict().keys())
+    
+    # Filter state_dict to only include keys that exist in the model
+    # This is crucial when loading a Mamba checkpoint into a model without Mamba modules
+    filtered_state_dict = {}
+    missing_mamba_keys = []
+    
+    for k, v in state_dict.items():
+        if k in model_keys:
+            filtered_state_dict[k] = v
+        elif ".mamba." in k:
+            missing_mamba_keys.append(k)
+    
+    if missing_mamba_keys and allow_missing_mamba:
+        print(f"Skipping {len(missing_mamba_keys)} Mamba-related weights (allow_missing_mamba=True)")
+    
+    msg = model.load_state_dict(filtered_state_dict, strict=not allow_missing_mamba)
+    if msg.missing_keys or msg.unexpected_keys:
+        print(f"Checkpoint Load Info: {msg}")
+
+
+def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True, patch_size=256, allow_missing_mamba=False):
     """
     Inference script for the official SIDD Benchmark (sRGB).
     Loads BenchmarkNoisyBlocksSrgb.mat and saves SubmitSrgb.csv (and .mat).
@@ -214,4 +239,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Ensure src is in PYTHONPATH if running from root
-    predict_benchmark(args.model, args.benchmark, args.output, use_tta=not args.no_tta, patch_size=args.patch_size)
+    predict_benchmark(
+        args.model,
+        args.benchmark,
+        args.output,
+        use_tta=not args.no_tta,
+        patch_size=args.patch_size,
+        allow_missing_mamba=args.allow_missing_mamba
+    )
