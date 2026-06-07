@@ -8,13 +8,11 @@
 seed: 42                      # Random seed for reproducibility (PyTorch, Numpy, Python).
 max_hours: null               # Maximum training duration in hours. Set to null (or leave empty) to deactivate.
                               # Useful for environments with time limits like Kaggle (12h) or Colab.
-use_compile: false             # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
-mixed_precision: "no"         # Mixed precision mode: "no", "fp16", or "bf16".
-                              # "fp16" is recommended for most NVIDIA GPUs. "bf16" is better for Ampere+ (A100, 30-series).
+use_compile: true            # Whether to use torch.compile() for model acceleration. Requires PyTorch 2.0+ and compatible hardware.
+mixed_precision: "bf16"         # Mixed precision mode: "no", "fp16", or "bf16".
 
 # --- Data Paths ---
-data_dir: "/kaggle/input/datasets/shaojunjieeric/ssid-medium-srgb/mnt/d/SIDD_Medium_Srgb/Data"      # Path to the raw SIDD Benchmark dataset (containing Ground Truth and Noisy folders).
-lmdb_dir: "/kaggle/working/sidd_lmdb" # Path where the processed LMDB dataset is (or will be) stored for high-performance I/O.
+lmdb_dir: "dataset/ssid-lmdb" # Path where the processed LMDB dataset is (or will be) stored for high-performance I/O.
 output_dir: "checkpoints"     # Directory where checkpoints, logs, and WandB artifacts will be saved.
 
 # --- Resuming Training ---
@@ -23,10 +21,13 @@ resume_path: null             # Specific path to a .pth checkpoint file to resum
                               # If 'resume' is true and this is null, it searches for 'last_model.pth' in output_dir.
 
 # --- Model Hyperparameters ---
-embed_dim: 64                 # The base embedding dimension for the network. Higher values increase model capacity but use more VRAM.
-num_blocks: 8                 # Number of interleaved HASST blocks (Local NAFBlock + Global Mamba ASSB).
+embed_dim: 37                 # The base embedding dimension. Report HASST: 37 → 18.7M parameters
+num_blocks: 20                # Total HASSTBlocks in the network. Distribution: [2,2,2,2] enc/dec + 2 mid. Report: 18.7M params
 in_channels: 3                # Number of input color channels (3 for RGB).
 out_channels: 3               # Number of output color channels (3 for RGB).
+lonpe_scale_physical: true    # Map LoNPE outputs to physically meaningful shot/read ranges.
+lonpe_shot_range: [1.0e-5, 5.0e-1] # Shot-noise prior range.
+lonpe_read_range: [1.0e-6, 1.0e-2] # Read-noise prior range.
 
 # --- WandB & Logging Frequency ---
 wandb_project: "sidd-hasst"   # The name of the Weights & Biases project for logging.
@@ -36,27 +37,39 @@ wandb_run_id: null            # Specific WandB Run ID to resume (e.g., "oqhsp5mu
 log_freq: 100                 # Log training metrics (loss, LR, etc.) to WandB every N iterations.
 val_freq: 2000                # Perform validation and log visual image comparisons to WandB every N iterations.
 checkpoint_freq: 5000         # Save a 'last_model.pth' checkpoint locally every N iterations.
+wandb_watch: false            # Enable only for short debugging runs; it slows long training.
+wandb_watch_log_freq: 200     # Histogram logging frequency when wandb_watch=true.
+require_mamba: false          # Set true for strict report-faithful training when mamba-ssm is installed.
 
 # --- Progressive Training Schedule ---
 # The training is split into phases with increasing patch sizes to balance global context and local refinement.
-total_iters: 500000           # Total number of iterations across all phases.
-patch_sizes: [128, 192, 256, 384]  # Patch sizes for each phase (e.g., Phase 1: 128x128, Phase 2: 256x256, etc.).
-batch_sizes: [4, 2, 1, 1]        # Batch size per GPU for each phase. Adjust based on your available VRAM.
-phase_milestones: [150000, 300000, 420000] # Iteration counts where the next phase begins.
+total_iters: 300000           # Total number of iterations across all phases.
+patch_sizes: [128, 160, 192, 256, 384]  # Patch sizes for each phase (e.g., Phase 1: 128x128, Phase 2: 256x256, etc.).
+batch_sizes: [8, 5, 4, 2, 1]        # Batch size per GPU for each phase. Adjust based on your available VRAM.
+phase_milestones: [60000, 120000, 180000, 240000] # Iteration counts where the next phase begins.
 
 # --- Optimizer & Learning Rate ---
-optimizer_type: "AdamW"       # Type of optimizer. (Currently "Adam" or "AdamW").
 lr_initial: 1.0e-4            # Initial learning rate. Decayed slightly due to extremely small batch scale limits.
 lr_min: 1.0e-07               # Minimum learning rate for the Cosine Annealing scheduler.
 beta1: 0.9                    # Adam optimizer's beta1 parameter (momentum).
-beta2: 0.999                  # Adam optimizer's beta2 parameter (RMSprop-like).
-weight_decay: 1.0e-04         # L2 regularization coefficient.
+beta2: 0.999                   # Adam optimizer's beta2 parameter (RMSprop-like).
+weight_decay: 0.0            # L2 regularization coefficient.
 
 # --- Loss Function Weights ---
 # The loss is a weighted sum of spatial and frequency domain errors.
 charbonnier_weight: 1.0       # Weight for the Charbonnier loss (robust L1-like spatial loss).
-wavelet_weight: 0.05          # Weight for the frequency-domain Wavelet loss.
+wavelet_weight: 0.05           # Weight for the frequency-domain Wavelet loss.
+ssim_weight: 0.00             # Weight for the SSIM loss.
 
 # --- Hardware / DataLoader Settings ---
-num_workers: 4                # Number of CPU subprocesses for data loading per GPU.
+num_workers: 8                # Number of CPU subprocesses for data loading per GPU.
 pin_memory: true              # Whether to use pinned memory for faster CPU-to-GPU data transfer.
+prefetch_factor: 4            # Number of batches to prefetch per worker to hide IO latency.
+train_loader_in_order: false  # Allow out-of-order batches to avoid head-of-line blocking from one slow worker.
+worker_cpu_threads: 1         # Limit intra-op CPU threads inside each worker to avoid oversubscription spikes.
+
+# --- Runtime Optimizations ---
+channels_last: true           # Faster memory layout on NVIDIA GPUs for conv-heavy workloads.
+cudnn_benchmark: true         # Lets cuDNN auto-pick the fastest kernels for fixed patch sizes.
+gradient_accumulation_steps: 1 # Increase only if you need a larger effective batch without fitting it in VRAM.
+

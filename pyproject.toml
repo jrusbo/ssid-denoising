@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml==6.0.3",
     "ruff==0.15.13",
     "scipy==1.15.2",
+    "h5py==3.13.0",
 ]
 
 [project.optional-dependencies]

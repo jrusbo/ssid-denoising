@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import torch
 import wandb
 from pathlib import Path
 
@@ -15,7 +16,7 @@ class WandBValidationLogger:
             wandb.init(
                 project=config.wandb_project,
                 entity=config.wandb_entity,
-                config=vars(config),
+                config=dict(vars(config)),
                 id=self.run_id,
                 resume="allow"
             )
@@ -31,34 +32,53 @@ class WandBValidationLogger:
             return
         wandb.log(metrics_dict, step=step, commit=commit)
 
-    def log_gradients(self, step, model, commit=True):
-        """Logs gradient norms to spot gradient explosions or vanishing layers early."""
+    def log_gradients(self, step, model, commit=True, force_detailed=False):
+        """
+        Logs gradient norms. Optimized to avoid multiple GPU-CPU syncs.
+        Individual layer norms are only logged if force_detailed=True or at val_freq.
+        """
         if not self.is_main_process:
             return
 
-        metrics = {}
-        total_grad_norm = 0.0
+        # Detailed logging is expensive; do it sparingly
+        log_detailed = force_detailed or (step % self.val_freq == 0)
         
-        # Log global norm and check for specific modules if possible
-        for name, p in model.named_parameters():
-            if p.grad is not None:
-                param_norm = p.grad.norm(2).item()
-                total_grad_norm += param_norm ** 2
-                
-                # Log norms for major components (e.g., specific blocks or layers)
-                # but limit to avoid overwhelming wandb
-                if "weight" in name and ("conv" in name or "attn" in name):
-                    # Shorten name for readability in wandb
-                    short_name = name.replace("module.", "").replace("_orig_mod.", "")
-                    metrics[f"grads/{short_name}"] = param_norm
+        names = []
+        norms = []
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if p.grad is not None:
+                    # Store the tensor norm (still on GPU)
+                    names.append(name)
+                    norms.append(p.grad.norm(2))
 
-        metrics["telemetry/total_gradient_norm"] = total_grad_norm**0.5
+        if not norms:
+            return
+
+        # One single sync point: move all norms to CPU at once
+        # NumPy conversion can fail on bfloat16; normalize to float32 first.
+        norms_cpu = torch.stack(norms).float().cpu().numpy()
+
+        metrics = {}
+        total_grad_norm_sq = 0.0
+        
+        for i, name in enumerate(names):
+            norm_val = norms_cpu[i]
+            total_grad_norm_sq += norm_val ** 2
+            
+            if log_detailed:
+                if "weight" in name and ("conv" in name or "attn" in name):
+                    short_name = name.replace("module.", "").replace("_orig_mod.", "")
+                    metrics[f"grads/{short_name}"] = norm_val
+
+        metrics["telemetry/total_gradient_norm"] = total_grad_norm_sq**0.5
         wandb.log(metrics, step=step, commit=commit)
 
-    def log_visual_artifacts(self, step, noisy_tensor, pred_tensor, gt_tensor, prefix="visuals", commit=True):
+    def log_visual_artifacts(self, step, noisy_tensor, pred_tensor, gt_tensor, noise_prior_tensor=None, prefix="visuals", commit=True):
         """
         Stitches images into a single comparison grid:
-        [ Noisy | Prediction | Ground Truth | Error Map ]
+        [ Noisy | Prediction | Ground Truth | Error Map | Shot Prior | Read Prior ]
+        where the last two panes are included when a 2-channel LoNPE prior is provided.
         """
         if not self.is_main_process or (step % self.val_freq != 0):
             return
@@ -68,7 +88,22 @@ class WandBValidationLogger:
             # Handle both (B, C, H, W) and (C, H, W)
             if t.dim() == 4:
                 t = t[0]
-            return (t.detach().cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+            # NumPy cannot ingest bfloat16 directly on some PyTorch builds.
+            t = t.detach().float().cpu().clamp(0.0, 1.0)
+            return (t.numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+
+        def to_heatmap(t):
+            if t.dim() == 4:
+                t = t[0]
+            if t.dim() == 3:
+                t = t[0]
+            # Ensure CPU float32 before converting to NumPy for OpenCV.
+            arr = t.detach().float().cpu().numpy()
+            arr = arr - arr.min()
+            denom = max(arr.max(), 1e-8)
+            arr = (arr / denom * 255.0).astype(np.uint8)
+            heat_bgr = cv2.applyColorMap(arr, cv2.COLORMAP_VIRIDIS)
+            return cv2.cvtColor(heat_bgr, cv2.COLOR_BGR2RGB)
 
         # Convert tensors to numpy images (RGB)
         noisy_img = to_numpy(noisy_tensor)
@@ -86,14 +121,23 @@ class WandBValidationLogger:
         # Convert BGR (OpenCV) back to RGB
         error_map_color_rgb = cv2.cvtColor(error_map_color_bgr, cv2.COLOR_BGR2RGB)
 
+        panes = [noisy_img, pred_img, gt_img, error_map_color_rgb]
+
+        if noise_prior_tensor is not None:
+            if noise_prior_tensor.dim() == 4:
+                noise_prior_tensor = noise_prior_tensor[0]
+            if noise_prior_tensor.size(0) >= 2:
+                panes.append(to_heatmap(noise_prior_tensor[0:1]))
+                panes.append(to_heatmap(noise_prior_tensor[1:2]))
+
         # Stitch horizontally
-        comparison_grid = np.concatenate([noisy_img, pred_img, gt_img, error_map_color_rgb], axis=1)
+        comparison_grid = np.concatenate(panes, axis=1)
 
         wandb.log(
             {
                 f"{prefix}/comparison_grid": wandb.Image(
                     comparison_grid, 
-                    caption="Left to Right: Noisy, HASST Prediction, Ground Truth, Error Map (Viridis)"
+                    caption="Left to Right: Noisy, HASST Prediction, Ground Truth, Error Map, Shot Prior, Read Prior"
                 )
             },
             step=step,

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
 class CharbonnierLoss(nn.Module):
@@ -40,27 +41,80 @@ class WaveletLoss(nn.Module):
         pad_w = x.shape[-1] % 2
         pad_h = x.shape[-2] % 2
         if pad_w != 0 or pad_h != 0:
-            x = F.pad(x, (0, pad_w, 0, pad_h))
-            y = F.pad(y, (0, pad_w, 0, pad_h))
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
+            y = F.pad(y, (0, pad_w, 0, pad_h), mode="reflect")
         return F.l1_loss(self._dwt(x), self._dwt(y))
 
 
+class SSIMLoss(nn.Module):
+    """Structural Similarity Index Measure (SSIM) Loss."""
+
+    def __init__(self, window_size=11, sigma=1.5, channels=3, size_average=True):
+        super().__init__()
+        self.window_size = window_size
+        self.size_average = size_average
+        self.channels = channels
+        self.sigma = sigma
+        window = self.create_window(window_size, sigma, channels)
+        self.register_buffer("window", window)
+
+    def gaussian(self, window_size, sigma):
+        gauss = torch.Tensor([np.exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
+        return gauss / gauss.sum()
+
+    def create_window(self, window_size, sigma, channel):
+        _1D_window = self.gaussian(window_size, sigma).unsqueeze(1)
+        _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
+        window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
+        return window
+
+    def forward(self, img1, img2):
+        # The window is automatically moved to the correct device by register_buffer
+        mu1 = F.conv2d(img1, self.window, padding=self.window_size // 2, groups=self.channels)
+        mu2 = F.conv2d(img2, self.window, padding=self.window_size // 2, groups=self.channels)
+
+        mu1_sq = mu1.pow(2)
+        mu2_sq = mu2.pow(2)
+        mu1_mu2 = mu1 * mu2
+
+        sigma1_sq = F.conv2d(img1 * img1, self.window, padding=self.window_size // 2, groups=self.channels) - mu1_sq
+        sigma2_sq = F.conv2d(img2 * img2, self.window, padding=self.window_size // 2, groups=self.channels) - mu2_sq
+        sigma12 = F.conv2d(img1 * img2, self.window, padding=self.window_size // 2, groups=self.channels) - mu1_mu2
+
+        C1 = 0.01 ** 2
+        C2 = 0.03 ** 2
+
+        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+
+        if self.size_average:
+            return 1 - ssim_map.mean()
+        else:
+            return 1 - ssim_map.mean(dim=(1, 2, 3))
+
+
 class CompositeLoss(nn.Module):
-    """Combines Charbonnier and Wavelet domain constraints."""
+    """Combines Charbonnier, Wavelet and SSIM domain constraints."""
 
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.charbonnier = CharbonnierLoss()
         self.wavelet = WaveletLoss()
+        # Avoid building SSIM branch when it is disabled by config.
+        self.ssim = SSIMLoss(channels=config.out_channels) if config.ssim_weight != 0.0 else None
 
     def forward(self, pred, target):
         l_char = self.charbonnier(pred, target)
         l_wave = self.wavelet(pred, target)
+        if self.ssim is not None:
+            l_ssim = self.ssim(pred, target)
+        else:
+            l_ssim = pred.new_tensor(0.0)
 
         # Total balanced loss using config weights
         total_loss = (
             self.config.charbonnier_weight * l_char
             + self.config.wavelet_weight * l_wave
+            + self.config.ssim_weight * l_ssim
         )
-        return total_loss, {"loss_char": l_char, "loss_wave": l_wave}
+        return total_loss, {"loss_char": l_char, "loss_wave": l_wave, "loss_ssim": l_ssim}

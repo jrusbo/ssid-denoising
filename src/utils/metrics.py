@@ -3,18 +3,38 @@ import torch.nn.functional as F
 import numpy as np
 
 
+_ssim_window_cache = {}
+
+@torch.no_grad()
 def compute_psnr(pred, gt):
     """
     Computes PSNR on GPU for speed.
     Assumes tensors are in [0, 1] range.
+    Can handle batched or single image tensors.
     """
-    mse = F.mse_loss(pred, gt)
-    if mse == 0:
-        return 100.0
-    return 10 * torch.log10(1.0 / mse).item()
+    # Ensure inputs are tensors and on the same device
+    if not isinstance(pred, torch.Tensor):
+        pred = torch.tensor(pred)
+    if not isinstance(gt, torch.Tensor):
+        gt = torch.tensor(gt)
+
+    mse = F.mse_loss(pred, gt, reduction="none")
+    
+    # Average across all dimensions except the batch dimension
+    if mse.dim() == 4:
+        # Batched input (B, C, H, W)
+        mse = mse.reshape(mse.size(0), -1).mean(dim=1)
+        psnr = 10 * torch.log10(torch.tensor(1.0, device=mse.device, dtype=mse.dtype) / (mse + 1e-10))
+        return psnr.sum() # Return tensor
+    else:
+        # Single image (C, H, W) or (H, W)
+        mse = mse.mean()
+        psnr = 10 * torch.log10(torch.tensor(1.0, device=mse.device, dtype=mse.dtype) / (mse + 1e-10))
+        return psnr # Return tensor
 
 
-def compute_ssim(pred, gt, window_size=11, size_average=True):
+@torch.no_grad()
+def compute_ssim(pred, gt, window_size=11, sigma=1.5, size_average=True):
     """
     Computes SSIM on GPU.
     Reference: https://github.com/Po-Hsun-Su/pytorch-ssim
@@ -26,7 +46,14 @@ def compute_ssim(pred, gt, window_size=11, size_average=True):
 
     device = pred.device
     channel = pred.size(1)
-    window = _create_window(window_size, channel).to(device)
+    
+    # Cache key: (window_size, channel, sigma, device)
+    cache_key = (window_size, channel, float(sigma), str(device))
+    global _ssim_window_cache
+    if cache_key not in _ssim_window_cache:
+        _ssim_window_cache[cache_key] = _create_window(window_size, sigma, channel).to(device)
+    
+    window = _ssim_window_cache[cache_key]
 
     mu1 = F.conv2d(pred, window, padding=window_size // 2, groups=channel)
     mu2 = F.conv2d(gt, window, padding=window_size // 2, groups=channel)
@@ -45,18 +72,19 @@ def compute_ssim(pred, gt, window_size=11, size_average=True):
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
 
     if size_average:
-        return ssim_map.mean().item()
+        return ssim_map.mean() # Return tensor
     else:
-        return ssim_map.mean(1).mean(1).mean(1).item()
-
+        # Average spatially and across channels, but keep batch dimension if needed
+        # (Though current evaluate_pipeline expects a single scalar sum/average)
+        return ssim_map.mean(dim=(1, 2, 3)).sum() # Return tensor
 
 def _gaussian(window_size, sigma):
     gauss = torch.Tensor([np.exp(-(x - window_size // 2) ** 2 / float(2 * sigma**2)) for x in range(window_size)])
     return gauss / gauss.sum()
 
 
-def _create_window(window_size, channel):
-    _1D_window = _gaussian(window_size, 1.5).unsqueeze(1)
+def _create_window(window_size, sigma, channel):
+    _1D_window = _gaussian(window_size, sigma).unsqueeze(1)
     _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
     window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
     return window

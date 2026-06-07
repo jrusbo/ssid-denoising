@@ -2,6 +2,24 @@ import torch
 import torch.nn as nn
 
 
+class LayerNorm2d(nn.Module):
+    """
+    Channel-wise Layer Normalization for 4D (BCHW) tensors.
+    Mathematically identical to nn.LayerNorm but avoids expensive permutations.
+    """
+    def __init__(self, channels, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(channels))
+        self.bias = nn.Parameter(torch.zeros(channels))
+        self.eps = eps
+
+    def forward(self, x):
+        mean = x.mean(1, keepdim=True)
+        var = x.var(1, keepdim=True, unbiased=False)
+        x = (x - mean) / torch.sqrt(var + self.eps)
+        return x * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
+
+
 class SimpleGate(nn.Module):
     """Core NAFNet innovation: nonlinear multiplication of feature chunks."""
 
@@ -46,11 +64,11 @@ class NAFBlock(nn.Module):
         self.conv4 = nn.Conv2d(c, ffn_channel, kernel_size=1, bias=True)
         self.conv5 = nn.Conv2d(ffn_channel // 2, c, kernel_size=1, bias=True)
 
-        self.norm1 = nn.LayerNorm(c)
-        self.norm2 = nn.LayerNorm(c)
+        self.norm1 = LayerNorm2d(c)
+        self.norm2 = LayerNorm2d(c)
 
-        self.beta = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
-        self.gamma = nn.Parameter(torch.ones((1, c, 1, 1)) * 1e-2, requires_grad=True)
+        self.beta = nn.Parameter(torch.ones(c) * 1e-2, requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones(c) * 1e-2, requires_grad=True)
 
         # Conditional Modulation from LoNPE (2 channels: shot, read)
         self.cond_proj = nn.Sequential(
@@ -66,17 +84,17 @@ class NAFBlock(nn.Module):
             x_in = x_in * (1 + cond_scale)
 
         # 1. Spatial / Attention Branch
-        x = self.norm1(x_in.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        x = self.norm1(x_in)
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.sg(x)
         x = x * self.sca(x)
         x = self.conv3(x)
-        y = inp + x * self.beta
+        y = inp + x * self.beta.view(1, -1, 1, 1)
 
         # 2. Feed-forward / Channel Branch
-        x = self.norm2(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        x = self.norm2(y)
         x = self.conv4(x)
         x = self.sg(x)
         x = self.conv5(x)
-        return y + x * self.gamma
+        return y + x * self.gamma.view(1, -1, 1, 1)
