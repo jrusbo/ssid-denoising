@@ -1,29 +1,42 @@
-
 import numpy as np
 import torch
+from typing import Optional, Tuple
 
 # Global buffers for batch-size 1 augmentation
-_ncm_noise_buffer = None
-_ncm_gt_buffer = None
-_afm_noisy_buffer = None
-_afm_gt_buffer = None
+_ncm_noise_buffer: Optional[torch.Tensor] = None
+_ncm_gt_buffer: Optional[torch.Tensor] = None
+_afm_noisy_buffer: Optional[torch.Tensor] = None
+_afm_gt_buffer: Optional[torch.Tensor] = None
 
-def reset_augmentation_buffers():
-    """Resets global temporal buffers used for BS=1 augmentations."""
+
+def reset_augmentation_buffers() -> None:
+    """Resets global temporal buffers used for batch-size 1 augmentations."""
     global _ncm_noise_buffer, _ncm_gt_buffer, _afm_noisy_buffer, _afm_gt_buffer
     _ncm_noise_buffer = None
     _ncm_gt_buffer = None
     _afm_noisy_buffer = None
     _afm_gt_buffer = None
 
-def apply_noise_cutmix(noisy_batch, gt_batch, alpha=0.2):
-    """
-    Batched NoiseCutMix: Extracts noise residuals and mixes them within the batch.
-    Uses a temporal buffer if batch size is 1.
+
+def apply_noise_cutmix(
+    noisy_batch: torch.Tensor, gt_batch: torch.Tensor, alpha: float = 0.2
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Applies NoiseCutMix augmentation.
+
+    Extracts noise residuals and mixes them within the batch. Uses a temporal
+    buffer if the batch size is 1 to enable cross-sample mixing.
+
+    Args:
+        noisy_batch: Tensor of noisy images [B, C, H, W].
+        gt_batch: Tensor of ground truth images [B, C, H, W].
+        alpha: Alpha parameter for Beta distribution.
+
+    Returns:
+        A tuple containing (mixed_noisy_batch, gt_batch).
     """
     global _ncm_noise_buffer, _ncm_gt_buffer
     B, C, H, W = noisy_batch.shape
-    
+
     should_refresh_buffer = False
     if B > 1:
         # Mix within the batch
@@ -35,7 +48,7 @@ def apply_noise_cutmix(noisy_batch, gt_batch, alpha=0.2):
             _ncm_noise_buffer = noisy_batch.detach().clone()
             _ncm_gt_buffer = gt_batch.detach().clone()
             return noisy_batch, gt_batch
-        
+
         noisy_b = _ncm_noise_buffer
         gt_b = _ncm_gt_buffer
         should_refresh_buffer = True
@@ -70,14 +83,25 @@ def apply_noise_cutmix(noisy_batch, gt_batch, alpha=0.2):
     return mixed_noisy, gt_batch
 
 
-def adversarial_frequency_mixup(noisy_batch, gt_batch, alpha=0.5):
-    """
-    Paired AFM: Mixes frequencies of both noisy and GT batches simultaneously.
+def adversarial_frequency_mixup(
+    noisy_batch: torch.Tensor, gt_batch: torch.Tensor, alpha: float = 0.5
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Applies Adversarial Frequency Mixup (AFM).
+
+    Mixes frequencies of both noisy and GT batches simultaneously.
     This ensures the mapping between noisy input and clean target remains valid.
+
+    Args:
+        noisy_batch: Tensor of noisy images [B, C, H, W].
+        gt_batch: Tensor of ground truth images [B, C, H, W].
+        alpha: Mixing ratio for frequencies.
+
+    Returns:
+        A tuple containing (mixed_noisy_batch, mixed_gt_batch).
     """
     global _afm_noisy_buffer, _afm_gt_buffer
     B = noisy_batch.shape[0]
-    
+
     should_refresh_buffer = False
     if B > 1:
         noisy_b2 = torch.roll(noisy_batch, shifts=1, dims=0)
@@ -87,22 +111,24 @@ def adversarial_frequency_mixup(noisy_batch, gt_batch, alpha=0.5):
             _afm_noisy_buffer = noisy_batch.detach().clone()
             _afm_gt_buffer = gt_batch.detach().clone()
             return noisy_batch, gt_batch
-        
+
         noisy_b2 = _afm_noisy_buffer
         gt_b2 = _afm_gt_buffer
         should_refresh_buffer = True
 
-    def _mix_freq(img1, img2):
+    def _mix_freq(img1: torch.Tensor, img2: torch.Tensor) -> torch.Tensor:
         fft_1 = torch.fft.rfft2(img1, dim=(-2, -1), norm="ortho")
         fft_2 = torch.fft.rfft2(img2, dim=(-2, -1), norm="ortho")
-        
+
         amp1, phase1 = torch.abs(fft_1), torch.angle(fft_1)
         amp2, _ = torch.abs(fft_2), torch.angle(fft_2)
-        
+
         mixed_amp = (1 - alpha) * amp1 + alpha * amp2
         mixed_fft = torch.polar(mixed_amp, phase1)
-        
-        return torch.fft.irfft2(mixed_fft, s=img1.shape[-2:], dim=(-2, -1), norm="ortho")
+
+        return torch.fft.irfft2(
+            mixed_fft, s=img1.shape[-2:], dim=(-2, -1), norm="ortho"
+        )
 
     mixed_noisy = torch.clamp(_mix_freq(noisy_batch, noisy_b2), 0.0, 1.0)
     mixed_gt = torch.clamp(_mix_freq(gt_batch, gt_b2), 0.0, 1.0)

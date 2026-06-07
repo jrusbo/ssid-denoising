@@ -16,6 +16,14 @@ from models.mamba_ir import get_mamba_class  # noqa: E402
 
 
 def count_params(cfg: Config) -> int:
+    """Calculates the total number of parameters for the HASST model based on config.
+
+    Args:
+        cfg: The configuration object containing model architecture parameters.
+
+    Returns:
+        The total number of parameters in the model.
+    """
     model = HASST(
         in_channels=cfg.in_channels,
         out_channels=cfg.out_channels,
@@ -29,10 +37,29 @@ def count_params(cfg: Config) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check HASST parameter count against a target range.")
-    parser.add_argument("--config", type=Path, default=None, help="Optional YAML config path.")
-    parser.add_argument("--target-m", type=float, default=18.7, help="Target parameter count in millions.")
-    parser.add_argument("--tol-m", type=float, default=0.3, help="Allowed absolute tolerance in millions.")
+    """Checks the HASST parameter count against a target range and tolerance.
+
+    Returns:
+        0 if within tolerance, 1 otherwise.
+    """
+    parser = argparse.ArgumentParser(
+        description="Check HASST parameter count against a target range."
+    )
+    parser.add_argument(
+        "--config", type=Path, default=None, help="Optional YAML config path."
+    )
+    parser.add_argument(
+        "--target-m",
+        type=float,
+        default=18.7,
+        help="Target parameter count in millions.",
+    )
+    parser.add_argument(
+        "--tol-m",
+        type=float,
+        default=0.3,
+        help="Allowed absolute tolerance in millions.",
+    )
     args = parser.parse_args()
 
     cfg = Config.load_from_yaml(args.config) if args.config else Config()
@@ -43,7 +70,9 @@ def main() -> int:
 
     print(f"config: {args.config if args.config else 'Config() defaults'}")
     print(f"embed_dim={cfg.embed_dim}, num_blocks={cfg.num_blocks}")
-    print(f"mamba_global_branch={'enabled' if mamba_available else 'disabled (fallback)'}")
+    print(
+        f"mamba_global_branch={'enabled' if mamba_available else 'disabled (fallback)'}"
+    )
     print(f"params={total:,} ({total_m:.4f}M)")
     print(f"target={args.target_m:.4f}M, diff={diff_m:+.4f}M")
 
@@ -57,4 +86,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

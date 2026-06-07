@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
+from typing import Tuple
 
 
 class LoNPE(nn.Module):
-    """
-    Locally Noise Prior Estimation (LoNPE) Module.
+    """Locally Noise Prior Estimation (LoNPE) Module.
+
     Official implementation as per Condformer (IJCV 2025).
     Estimates a 2-channel dense spatial noise prior map (shot noise, read noise) from the noisy input.
 
@@ -13,15 +14,27 @@ class LoNPE(nn.Module):
       those normalized estimates to physically meaningful ranges for shot and read
       noise. This keeps backward compatibility (returns a 2-channel tensor) while
       providing a scaled interpretation useful for conditioning and diagnostics.
-
-    Parameters:
-    - shot_range: tuple(float, float) minimum and maximum for the shot-noise scale
-    - read_range: tuple(float, float) minimum and maximum for the read-noise variance
-    - scale_physical: if True (default) maps sigmoid outputs -> physical ranges.
     """
 
-    def __init__(self, in_channels=3, mid_channels=32, out_channels=2,
-                 shot_range=(1e-5, 5e-1), read_range=(1e-6, 1e-2), scale_physical=True):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        mid_channels: int = 32,
+        out_channels: int = 2,
+        shot_range: Tuple[float, float] = (1e-5, 5e-1),
+        read_range: Tuple[float, float] = (1e-6, 1e-2),
+        scale_physical: bool = True,
+    ) -> None:
+        """Initializes the LoNPE module.
+
+        Args:
+            in_channels: Number of input channels.
+            mid_channels: Number of intermediate channels.
+            out_channels: Number of output channels (typically 2 for shot and read noise).
+            shot_range: Minimum and maximum for the shot-noise scale.
+            read_range: Minimum and maximum for the read-noise variance.
+            scale_physical: If True, maps sigmoid outputs to physical ranges.
+        """
         super(LoNPE, self).__init__()
         # Official architecture: 3x3 Conv -> ReLU -> 3x3 Conv -> ReLU -> 3x3 Conv -> Sigmoid
         self.estimation = nn.Sequential(
@@ -38,7 +51,15 @@ class LoNPE(nn.Module):
         self.read_min, self.read_max = float(read_range[0]), float(read_range[1])
         self.scale_physical = bool(scale_physical)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape (B, C, H, W).
+
+        Returns:
+            Noise prior map of shape (B, 2, H, W).
+        """
         s = self.estimation(x)  # (B,2,H,W) in [0,1]
 
         if not self.scale_physical:

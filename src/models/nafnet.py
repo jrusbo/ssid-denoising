@@ -1,19 +1,35 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 
 
 class LayerNorm2d(nn.Module):
-    """
-    Channel-wise Layer Normalization for 4D (BCHW) tensors.
+    """Channel-wise Layer Normalization for 4D (BCHW) tensors.
+
     Mathematically identical to nn.LayerNorm but avoids expensive permutations.
     """
-    def __init__(self, channels, eps=1e-6):
+
+    def __init__(self, channels: int, eps: float = 1e-6) -> None:
+        """Initializes LayerNorm2d.
+
+        Args:
+            channels: Number of channels in the input tensor.
+            eps: A value added to the denominator for numerical stability.
+        """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(channels))
         self.bias = nn.Parameter(torch.zeros(channels))
         self.eps = eps
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape (B, C, H, W).
+
+        Returns:
+            Normalized tensor.
+        """
         mean = x.mean(1, keepdim=True)
         var = x.var(1, keepdim=True, unbiased=False)
         x = (x - mean) / torch.sqrt(var + self.eps)
@@ -23,19 +39,34 @@ class LayerNorm2d(nn.Module):
 class SimpleGate(nn.Module):
     """Core NAFNet innovation: nonlinear multiplication of feature chunks."""
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape (B, C, H, W).
+
+        Returns:
+            Gated tensor of shape (B, C//2, H, W).
+        """
         x1, x2 = x.chunk(2, dim=1)
         return x1 * x2
 
 
 class NAFBlock(nn.Module):
-    """
-    Nonlinear Activation Free Block (NAFBlock).
+    """Nonlinear Activation Free Block (NAFBlock).
+
     Official Megvii-Research implementation structure.
     Extended with LoNPE-based conditional modulation.
     """
 
-    def __init__(self, c, dw_expand=2, ffn_expand=2):
+    def __init__(self, c: int, dw_expand: int = 2, ffn_expand: int = 2) -> None:
+        """Initializes NAFBlock.
+
+        Args:
+            c: Number of input/output channels.
+            dw_expand: Expansion factor for depthwise convolution.
+            ffn_expand: Expansion factor for feed-forward network.
+        """
         super().__init__()
         dw_channel = c * dw_expand
         self.conv1 = nn.Conv2d(c, dw_channel, kernel_size=1, bias=True)
@@ -71,12 +102,20 @@ class NAFBlock(nn.Module):
         self.gamma = nn.Parameter(torch.ones(c) * 1e-2, requires_grad=True)
 
         # Conditional Modulation from LoNPE (2 channels: shot, read)
-        self.cond_proj = nn.Sequential(
-            nn.Conv2d(2, c, kernel_size=1),
-            nn.Sigmoid()
-        )
+        self.cond_proj = nn.Sequential(nn.Conv2d(2, c, kernel_size=1), nn.Sigmoid())
 
-    def forward(self, inp, noise_prior=None):
+    def forward(
+        self, inp: torch.Tensor, noise_prior: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            inp: Input tensor of shape (B, C, H, W).
+            noise_prior: Optional noise prior tensor of shape (B, 2, H, W).
+
+        Returns:
+            Output tensor of shape (B, C, H, W).
+        """
         # Apply conditional modulation if prior is provided (Centered around 1.0)
         x_in = inp
         if noise_prior is not None:
