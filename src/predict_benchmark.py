@@ -130,20 +130,43 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True, pat
     scene_pbar = tqdm(range(num_scenes), desc="Total Progress", mininterval=5.0)
     for s in scene_pbar:
         scene_pbar.set_description(f"Scene {s+1}/{num_scenes}")
+        
+        # --- NEW: Hybrid Scene-Level Stability ---
+        # 1. Collect priors to extract the "Read Noise" (constant sensor noise)
+        scene_read_vals = []
+        for b in range(num_blocks):
+            block = noisy_blocks[s, b].astype(np.float32) / 255.0
+            block_tensor = torch.from_numpy(block).permute(2, 0, 1).unsqueeze(0).to(device)
+            with torch.no_grad():
+                # Channel 0: Shot (signal-dependent), Channel 1: Read (constant)
+                prior = model.estimate_noise_prior(block_tensor)
+                scene_read_vals.append(prior[:, 1:2].mean()) # Average spatially per block
+        
+        # 2. Compute a single stable Read Noise scalar for the entire scene
+        avg_read_constant = torch.stack(scene_read_vals).mean()
+        # ------------------------------------------
+
         for b in tqdm(range(num_blocks), desc=f"Scene {s+1}", leave=False, mininterval=1.0):
             # Preprocess: (H, W, C) [0, 255] -> (1, C, H, W) [0, 1]
             block = noisy_blocks[s, b].astype(np.float32) / 255.0
             block_tensor = torch.from_numpy(block).permute(2, 0, 1).unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                # Get the block's specific prior (containing signal-dependent shot noise)
+                block_prior = model.estimate_noise_prior(block_tensor)
+                # HYBRID: Keep block-specific Shot noise, but inject scene-stable Read noise
+                hybrid_prior = block_prior.clone()
+                hybrid_prior[:, 1:2, ...] = avg_read_constant
 
             # Inference with mixed precision for maximum A100 throughput
             dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float16
             with torch.no_grad(), torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type == "cuda"):
                 if use_tta:
                     # 8x Geometric Self-Ensemble with TLC wrapper
-                    pred_tensor = engine.forward_tlc(block_tensor, patch_size=patch_size)
+                    pred_tensor = engine.forward_tlc(block_tensor, patch_size=patch_size, noise_prior=hybrid_prior)
                 else:
                     # Single Forward Pass
-                    pred_tensor = model(block_tensor)
+                    pred_tensor = model(block_tensor, noise_prior=hybrid_prior)
 
             # Postprocess: (1, C, H, W) [0, 1] -> (H, W, C) [0, 255]
             pred_np = pred_tensor.squeeze(0).permute(1, 2, 0).float().cpu().numpy()

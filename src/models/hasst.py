@@ -160,12 +160,13 @@ class HASST(nn.Module):
     def estimate_noise_prior(self, x):
         return self.lonpe(x)
 
-    def forward(self, x):
+    def forward(self, x, noise_prior=None):
         # Global residual hook
         residual_identity = x
 
         # Extract sensor-level local noise prior maps (2 channels)
-        noise_prior = self.estimate_noise_prior(x)
+        if noise_prior is None:
+            noise_prior = self.estimate_noise_prior(x)
 
         # Map input image to latent embedding space
         feat = self.intro(x)

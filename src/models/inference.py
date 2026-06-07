@@ -57,14 +57,21 @@ class HASSTInferenceEngine:
         return x
 
     @torch.no_grad()
-    def forward_tta(self, x: torch.Tensor) -> torch.Tensor:
+    def forward_tta(self, x: torch.Tensor, noise_prior: torch.Tensor = None) -> torch.Tensor:
         """Runs the 8x geometric self-ensemble forward pass with running average."""
         x = x.to(self.device)
         tta_result = 0.0
 
         for mode in range(8):
             transformed_input = self._apply_tta(x, mode)
-            pred = self.model(transformed_input)
+            
+            # If a global noise_prior is provided, we must also apply the TTA transform to it
+            # so that it aligns with the transformed input image.
+            current_prior = None
+            if noise_prior is not None:
+                current_prior = self._apply_tta(noise_prior.to(self.device), mode)
+
+            pred = self.model(transformed_input, noise_prior=current_prior)
             inverted_pred = self._invert_tta(pred, mode)
             # Accumulate in float32 to prevent precision drift from low-bit autocast
             tta_result = tta_result + (inverted_pred.float() / 8.0)
@@ -72,7 +79,7 @@ class HASSTInferenceEngine:
         return tta_result
 
     @torch.no_grad()
-    def forward_tlc(self, x: torch.Tensor, patch_size=256, merge_type="mean") -> torch.Tensor:
+    def forward_tlc(self, x: torch.Tensor, patch_size=256, merge_type="mean", noise_prior: torch.Tensor = None) -> torch.Tensor:
         """
         Test-Time Local Converter (TLC) inference wrapper.
         Splits high-resolution inputs into overlapping patches, infers each,
@@ -82,13 +89,13 @@ class HASSTInferenceEngine:
         B, C, H, W = x.shape
         # Optimization: If the image matches patch_size exactly, skip overlapping logic
         if H == patch_size and W == patch_size:
-            return self.forward_tta(x)
+            return self.forward_tta(x, noise_prior=noise_prior)
             
-        return self.inference_patch_overlapping(x, patch_size=patch_size, stride=patch_size // 2)
+        return self.inference_patch_overlapping(x, patch_size=patch_size, stride=patch_size // 2, noise_prior=noise_prior)
 
     @torch.no_grad()
     def inference_patch_overlapping(
-        self, x: torch.Tensor, patch_size=256, stride=192
+        self, x: torch.Tensor, patch_size=256, stride=192, noise_prior: torch.Tensor = None
     ) -> torch.Tensor:
         """
         Splits high-resolution validation images into overlapping windows,
@@ -103,6 +110,11 @@ class HASSTInferenceEngine:
         pad_amount = falloff
 
         padded_x = F.pad(x, (pad_amount, pad_amount, pad_amount, pad_amount), mode="reflect")
+        
+        # Pad noise_prior similarly if provided
+        padded_prior = None
+        if noise_prior is not None:
+            padded_prior = F.pad(noise_prior.to(self.device), (pad_amount, pad_amount, pad_amount, pad_amount), mode="reflect")
 
         # Now deal with dimensions not divisible by stride or patch size
         _, _, p_H, p_W = padded_x.shape
@@ -111,6 +123,8 @@ class HASSTInferenceEngine:
 
         if pad_h_extra > 0 or pad_w_extra > 0:
             padded_x = F.pad(padded_x, (0, pad_w_extra, 0, pad_h_extra), mode="reflect")
+            if padded_prior is not None:
+                padded_prior = F.pad(padded_prior, (0, pad_w_extra, 0, pad_h_extra), mode="reflect")
 
         _, _, new_H, new_W = padded_x.shape
 
@@ -118,11 +132,13 @@ class HASSTInferenceEngine:
         output_canvas = torch.zeros_like(padded_x)
         weight_canvas = torch.zeros((B, 1, new_H, new_W), device=self.device)
 
-        # Create a linear 2D windowing mask to soft-blend patch borders
-        # Vectorized for speed and efficiency
-        dist = torch.arange(patch_size, device=self.device)
-        dist = torch.minimum(dist, patch_size - 1 - dist).float()
-        mask_1d = (dist / falloff).clamp(0.0, 1.0)
+        # Create a smooth 2D windowing mask to soft-blend patch borders
+        # We use a sine-based falloff which is smoother than linear at the transitions.
+        dist = torch.arange(patch_size, device=self.device).float()
+        # mask_1d will be 0 at edges and 1 in the middle
+        mask_1d = torch.sin(torch.clamp(dist / (patch_size - 1) * torch.pi, 0, torch.pi))
+        # Square the mask to make the transition even smoother at the edges
+        mask_1d = mask_1d ** 2
         window = (mask_1d.reshape(1, 1, patch_size, 1) * mask_1d.reshape(1, 1, 1, patch_size))
 
         # Calculate range of patches ensuring the entire image (including padding) is covered
@@ -142,9 +158,13 @@ class HASSTInferenceEngine:
             for x_coord in x_range:
                 # Isolate crop
                 patch = padded_x[:, :, y : y + patch_size, x_coord : x_coord + patch_size]
+                
+                patch_prior = None
+                if padded_prior is not None:
+                    patch_prior = padded_prior[:, :, y : y + patch_size, x_coord : x_coord + patch_size]
 
                 # Execute inference through the 8x TTA module
-                pred_patch = self.forward_tta(patch)
+                pred_patch = self.forward_tta(patch, noise_prior=patch_prior)
 
                 # Add to canvas using the window blending weight map
                 output_canvas[
