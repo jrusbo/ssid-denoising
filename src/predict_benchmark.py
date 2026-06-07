@@ -16,6 +16,28 @@ from models.inference import HASSTInferenceEngine
 
 def load_checkpoint_file(model_path, allow_unsafe_pickle=True):
     """Loads checkpoints across PyTorch versions, including 2.6+ weights_only default changes."""
+    # Attempt to allowlist numpy globals for weights_only=True (PyTorch 2.6+)
+    try:
+        import torch.serialization
+        # We try to add common numpy globals that often cause weights_only=True to fail
+        safe_globals = []
+        try:
+            import numpy as np
+            if hasattr(np, "_core") and hasattr(np._core, "multiarray") and hasattr(np._core.multiarray, "_reconstruct"):
+                safe_globals.append(np._core.multiarray._reconstruct)
+            elif hasattr(np, "core") and hasattr(np.core, "multiarray") and hasattr(np.core.multiarray, "_reconstruct"):
+                safe_globals.append(np.core.multiarray._reconstruct)
+            
+            if hasattr(np, "ndarray"): safe_globals.append(np.ndarray)
+            if hasattr(np, "dtype"): safe_globals.append(np.dtype)
+        except ImportError:
+            pass
+
+        if safe_globals:
+            torch.serialization.add_safe_globals(safe_globals)
+    except (AttributeError, ImportError):
+        pass
+
     try:
         return torch.load(model_path, map_location="cpu")
     except TypeError:
@@ -23,9 +45,9 @@ def load_checkpoint_file(model_path, allow_unsafe_pickle=True):
         return torch.load(model_path, map_location="cpu")
     except Exception as exc:
         msg = str(exc)
-        if allow_unsafe_pickle and "Weights only load failed" in msg:
+        if allow_unsafe_pickle and ("Weights only load failed" in msg or "WeightsUnpickler" in msg):
             print(
-                "Checkpoint uses pickled non-tensor objects. "
+                "Checkpoint uses pickled non-tensor objects or unsupported globals. "
                 "Retrying with weights_only=False (trusted source required)."
             )
             return torch.load(model_path, map_location="cpu", weights_only=False)
@@ -209,11 +231,15 @@ def predict_benchmark(model_path, benchmark_path, output_path, use_tta=True, all
 
     if output_suffix == ".csv":
         save_submission_csv(denoised_blocks, output_path)
+        # Also save .mat as in version 3 for local analysis
+        mat_path = Path(output_path).with_suffix(".mat")
+        print(f"Also saving .mat file to {mat_path} (key: 'Idenoised')...")
+        scipy.io.savemat(mat_path, {"Idenoised": denoised_blocks})
     elif output_suffix == ".zip":
         save_submission_zip_csv(denoised_blocks, output_path)
     elif output_suffix == ".mat":
-        # Legacy format used by some scripts. Kaggle submission page expects CSV/Parquet.
-        scipy.io.savemat(output_path, {"DenoisedBlocksSrgb": denoised_blocks})
+        # Using 'Idenoised' key as in version 3
+        scipy.io.savemat(output_path, {"Idenoised": denoised_blocks})
     else:
         raise ValueError(
             f"Unsupported output extension '{output_suffix}'. "
