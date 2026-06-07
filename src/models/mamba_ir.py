@@ -1,3 +1,5 @@
+"""Attentive State-Space Block (ASSB) and related components for image restoration."""
+
 import torch
 import torch.nn as nn
 from einops import rearrange

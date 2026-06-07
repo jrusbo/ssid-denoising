@@ -1,3 +1,5 @@
+"""Utility script to convert SIDD PNG image pairs into a high-performance LMDB database."""
+
 import argparse
 import os
 import multiprocessing

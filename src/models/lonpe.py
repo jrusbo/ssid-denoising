@@ -1,3 +1,5 @@
+"""Locally Noise Prior Estimation (LoNPE) module for sensor-aware noise modeling."""
+
 import torch
 import torch.nn as nn
 from typing import Tuple

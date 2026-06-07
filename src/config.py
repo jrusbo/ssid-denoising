@@ -1,3 +1,5 @@
+"""Configuration system for the project using dataclasses and YAML loading."""
+
 import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path

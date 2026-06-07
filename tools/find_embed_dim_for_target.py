@@ -1,3 +1,5 @@
+"""Utility script to find the optimal embedding dimension to hit a specific parameter target."""
+
 from __future__ import annotations
 
 import argparse

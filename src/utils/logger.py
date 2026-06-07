@@ -1,3 +1,5 @@
+"""WandB validation logger for tracking training progress and visual artifacts."""
+
 import cv2
 import numpy as np
 import torch

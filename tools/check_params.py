@@ -1,3 +1,5 @@
+"""Verification tool to ensure the HASST model parameter count remains within a specified range."""
+
 from __future__ import annotations
 
 import argparse

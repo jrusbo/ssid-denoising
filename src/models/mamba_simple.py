@@ -1,3 +1,5 @@
+"""Pure PyTorch implementation of the Mamba block for compatibility on systems without mamba-ssm."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

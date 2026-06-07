@@ -1,3 +1,5 @@
+"""Main training script for the HASST model with progressive learning and multi-config support."""
+
 import argparse
 import inspect
 import json

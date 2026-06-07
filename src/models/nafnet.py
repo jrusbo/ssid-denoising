@@ -1,3 +1,5 @@
+"""Nonlinear Activation Free Network (NAFNet) blocks with noise conditioning support."""
+
 import torch
 import torch.nn as nn
 from typing import Optional

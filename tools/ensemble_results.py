@@ -1,3 +1,5 @@
+"""Ensembles multiple SIDD denoising results and generates a Kaggle-compatible CSV submission."""
+
 import scipy.io
 import numpy as np
 import base64

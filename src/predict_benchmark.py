@@ -1,3 +1,5 @@
+"""Inference pipeline for the SIDD sRGB Benchmark using the HASST model."""
+
 import argparse
 import base64
 import csv

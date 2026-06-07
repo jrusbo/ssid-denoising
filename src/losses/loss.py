@@ -1,3 +1,5 @@
+"""Composite loss functions for training denoising models, including Charbonnier, Wavelet, and SSIM terms."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

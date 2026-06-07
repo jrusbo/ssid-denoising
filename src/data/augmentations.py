@@ -1,3 +1,5 @@
+"""Image augmentation techniques for denoising, including NoiseCutMix and Adversarial Frequency Mixup."""
+
 import numpy as np
 import torch
 from typing import Optional, Tuple

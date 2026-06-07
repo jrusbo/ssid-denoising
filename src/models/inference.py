@@ -1,3 +1,5 @@
+"""Advanced inference engine for HASST, supporting TTA and overlapping patch-based reconstruction."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
